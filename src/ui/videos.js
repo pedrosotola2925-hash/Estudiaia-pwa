@@ -1,0 +1,2 @@
+(()=>{const E=window.Estudia;
+E.features.videos={init(){},render(){const cont=document.getElementById('zona-videos');cont.replaceChildren(E.ui.el('p','Selecciona materia y unidad, luego busca vídeos.',{style:'color:#64748b;'}));},leave(){}};})();

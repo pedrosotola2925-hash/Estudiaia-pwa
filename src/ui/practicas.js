@@ -1,0 +1,2 @@
+(()=>{const E=window.Estudia;
+E.features.practicas={init(){},async render(){const cont=document.getElementById('zona-quiz');cont.replaceChildren(E.ui.el('p','Selecciona una materia y unidad, luego pulsa “Crear práctica”.',{style:'color:#64748b;'}));},leave(){}};})();

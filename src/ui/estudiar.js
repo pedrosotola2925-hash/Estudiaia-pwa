@@ -1,0 +1,2 @@
+(()=>{const E=window.Estudia;
+E.features.estudiar={init(){},render(){const cont=document.getElementById('estudiar-root');cont.replaceChildren(E.ui.el('h2','📚 Aprender a estudiar'),E.ui.el('p','Técnicas de estudio disponibles próximamente.',{style:'color:#64748b;margin-top:12px;'}));},leave(){}};})();

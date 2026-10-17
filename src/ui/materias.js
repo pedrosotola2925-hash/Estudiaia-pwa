@@ -1,0 +1,8 @@
+(()=>{const E=window.Estudia;
+const unitsBySubject={matematica:['Álgebra','Geometría','Estadísticas','Ecuaciones','Funciones','Probabilidad'],ciencias:['Células','Fotosíntesis','Sistemas del cuerpo','Fuerzas','Energía','Ecosistemas'],lenguaje:['Comprensión lectora','Gramática','Escritura creativa','Poesía','Oratoria','Literatura chilena'],historia:['Chile prehispánico','Conquista','Independencia','República temprana','Siglo XX','Chile actual'],ingles:['Vocabulario básico','Presente simple','Pasado simple','Futuro','Adjetivos','Conversación'],tecnologia:['Algoritmos','Programación básica','Redes','Seguridad digital','Robótica','Proyectos']};
+E.features.materias={init(){},getUnits(subjectId,course){return Promise.resolve(unitsBySubject[subjectId]||['Unidad 1','Unidad 2','Unidad 3','Unidad 4','Unidad 5','Unidad 6']);},
+render(){const cont=document.getElementById('materias-cont');cont.replaceChildren(E.ui.el('h2','📖 Materias'));const grid=E.ui.el('div','','grid');
+for(const s of E.Core.SUBJECTS){const card=E.ui.el('div','','card');card.dataset.subject=s.id;card.append(E.ui.el('div',s.emoji,{style:'font-size:48px;text-align:center;'}));card.append(E.ui.el('h3',s.nombre,{style:'text-align:center;margin:8px 0;'}));card.append(E.ui.button('Ver unidades',E.ui.guard(()=>{const units=this.getUnits(s.id,E.course());const list=E.ui.el('ul','',{style:'margin-top:12px;'});units.forEach(u=>list.append(E.ui.el('li',u)));E.ui.message(cont,s.emoji+' '+s.nombre,'info');cont.append(list);}),'btn'));grid.append(card);}
+cont.append(grid);},
+leave(){const cont=document.getElementById('materias-cont');cont.replaceChildren(E.ui.el('h2','📖 Materias'));}};
+})();

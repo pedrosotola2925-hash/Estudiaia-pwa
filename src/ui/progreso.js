@@ -1,0 +1,2 @@
+(()=>{const E=window.Estudia;
+E.features.progreso={init(){},render(){const cont=document.getElementById('progreso-cont');cont.replaceChildren(E.ui.el('h2','📊 Mi progreso'),E.ui.el('p','Responde prácticas para ver aquí tu progreso 📊',{style:'text-align:center;color:#64748b;margin-top:20px;'}));},leave(){}};})();
