@@ -1,0 +1,12 @@
+.worktrees/
+.superpowers/
+node_modules/
+.build/
+build/voice/
+dist/
+test-results/
+playwright-report/
+__pycache__/
+*.pyc
+.env
+.env.*
