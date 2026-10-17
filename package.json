@@ -1,0 +1,14 @@
+{
+  "name": "estudiaia-2",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Tutor educativo con voz mexicana y herramientas de estudio",
+  "main": "src/main.cjs",
+  "author": "EstudiaIA",
+  "scripts": {
+    "start": "electron .",
+    "test": "npm run test:unit",
+    "test:unit": "node --test tests/unit/*.test.cjs"
+  },
+  "engines": {"node": ">=22.12.0"}
+}
