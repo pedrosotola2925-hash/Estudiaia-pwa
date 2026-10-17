@@ -1,0 +1,41 @@
+{
+  "appId": "cl.estudiaia.desktop.v2",
+  "productName": "EstudiaIA 2",
+  "artifactName": "EstudiaIA-2.0.0-Setup.exe",
+  "directories": {
+    "output": "dist",
+    "buildResources": "build"
+  },
+  "files": [
+    "src/**/*",
+    "!tests/**",
+    "!**/.env*",
+    "!**/*.map",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "build/voice/tts-helper.exe",
+      "to": "voice/tts-helper.exe"
+    }
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "EstudiaIA 2",
+    "runAfterFinish": true
+  }
+}
