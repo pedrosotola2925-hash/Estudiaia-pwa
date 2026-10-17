@@ -1,0 +1,1 @@
+(()=>{window.Estudia.data={courses:EstudiaCore.COURSES,subjects:EstudiaCore.SUBJECTS};})();
