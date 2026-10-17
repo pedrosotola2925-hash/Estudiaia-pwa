@@ -1,0 +1,4 @@
+const {_electron:electron}=require('playwright');const fs=require('node:fs');const path=require('node:path');
+const root=path.resolve(__dirname,'../..');
+async function launch(options={}){const base=path.join(root,'.build/ui-profiles');fs.mkdirSync(base,{recursive:true});const own=!options.profile;const profile=options.profile||fs.mkdtempSync(path.join(base,'case-'));const env={...process.env,ESTUDIAIA_TEST_USER_DATA:profile};delete env.ELECTRON_RUN_AS_NODE;const app=await electron.launch({executablePath:options.installed?process.env.ESTUDIAIA_INSTALLED_EXE:require('electron'),args:options.installed?[]:[root],env,timeout:30000});const page=await app.firstWindow();await page.waitForLoadState('domcontentloaded');return {app,page,profile,async close(){try{await app.close();}finally{if(own)fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});}}};}
+module.exports={launch};

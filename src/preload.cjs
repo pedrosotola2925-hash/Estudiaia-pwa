@@ -1,0 +1,2 @@
+const {contextBridge,ipcRenderer}=require('electron');
+const api={};for(const name of ['getSettings','saveSettings','clearKey','checkConnection','generate','searchVideos','speak','cancel','openVideo'])api[name]=async payload=>{const result=await ipcRenderer.invoke('estudia:'+name,payload);if(!result.ok){const e=new Error(result.error.message);e.code=result.error.code;throw e;}return result.value;};contextBridge.exposeInMainWorld('desktop',Object.freeze(api));

@@ -1,0 +1,1 @@
+const {defineConfig}=require('@playwright/test');module.exports=defineConfig({testDir:'./tests/ui',timeout:45000,workers:1,reporter:[['list'],['json',{outputFile:'test-results/ui-results.json'}]],projects:[{name:'dev',testIgnore:'**/release-smoke.spec.cjs'},{name:'release',testMatch:'**/release-smoke.spec.cjs'}]});
