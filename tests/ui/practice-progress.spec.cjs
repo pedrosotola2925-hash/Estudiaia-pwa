@@ -132,7 +132,10 @@ test('progress is course-scoped, keeps twenty history entries, and does not repo
       };
     });
     await page.locator('#btn-crear-practica').click();
-    await answerPractice(page);
+    for (let index = 0; index < 5; index += 1) {
+      await page.locator('[data-practice-option="0"]').click();
+      if (index < 4) await expect(page.locator('[data-practice-index]')).toHaveText(String(index + 2));
+    }
     await expect(page.locator('#practice-status [role="alert"]')).toContainText('No se pudo guardar');
     await expect(page.locator('#practice-status')).not.toContainText('Práctica guardada');
   } finally {
