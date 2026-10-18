@@ -7,12 +7,12 @@ async function installTutorMock(app) {
     ipcMain.removeHandler('estudia:generate');
     ipcMain.handle('estudia:generate', async (_event, payload) => {
       globalThis.__estudiaGenerateCalls.push(payload);
-      if (payload.text === 'lenta') {
+      if (payload.question === 'lenta') {
         await new Promise(resolve => setTimeout(resolve, 150));
       }
       return {
         ok: true,
-        value: { text: `Respuesta para ${payload.text || payload.file?.name || 'apuntes'} en ${payload.course}.` }
+        value: { text: `Respuesta para ${payload.question || payload.file?.name || 'apuntes'} en ${payload.course}.` }
       };
     });
   });

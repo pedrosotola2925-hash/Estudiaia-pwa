@@ -81,7 +81,7 @@
           id: requestId,
           kind,
           course,
-          text: kind === 'tutor' ? text : '',
+          question: kind === 'tutor' ? text : undefined,
           context,
           file: attachedFile
         });
