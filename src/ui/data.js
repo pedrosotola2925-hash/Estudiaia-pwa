@@ -1,1 +1,1 @@
-(()=>{window.Estudia.data={courses:EstudiaCore.COURSES,subjects:EstudiaCore.SUBJECTS};})();
+(()=>{const E=window.Estudia;E.Core=window.EstudiaCore;E.data={courses:E.Core.COURSES,subjects:E.Core.SUBJECTS};})();

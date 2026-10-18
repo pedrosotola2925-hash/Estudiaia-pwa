@@ -1,7 +1,81 @@
-const {test,expect}=require('@playwright/test');const {launch}=require('./helpers.cjs');
-test('six subject cards rendered and course filters units',async()=>{const {page,close}=await launch();try{await page.locator('[data-vista="materias"]').click();await expect(page.locator('[data-subject]')).toHaveCount(6,{timeout:2500});await page.locator('[data-subject="matematica"]').click();await expect(page.locator('#materias-cont')).toContainText('Álgebra');await expect(page.locator('#materias-cont')).toContainText('Geometría');}finally{await close();}});
-test('concurrent tutor questions respect course and cancel late responses',async()=>{const {app,page,close}=await launch();try{await page.locator('[data-vista="inicio"]').click();await expect(page.locator('#searchInput')).toBeVisible({timeout:2500});const calls=[];await app.evaluate(({ipcMain},fn)=>{ipcMain.removeHandler('estudia:generate');ipcMain.handle('estudia:generate',async(_,p)=>{calls.push({...p});return {ok:true,value:{text:'Respuesta de prueba.'}};});},null);await page.locator('#searchInput').fill('2+3');await page.locator('#searchBtn').click();await page.locator('#searchInput').fill('2-3');await page.locator('#searchBtn').click();await expect.poll(()=>calls.length).toBe(2);expect(calls[0].course).toBe('7º básico');expect(calls[1].course).toBe('7º básico');await page.locator('#sel-curso').selectOption('8º básico');await page.locator('#searchInput').fill('Fracciones');await page.locator('#searchBtn').click();await expect.poll(()=>calls.length).toBe(3);expect(calls[2].course).toBe('8º básico');}finally{await close();}});
-test('response for cancelled or superseded request is discarded',async()=>{const {app,page,close}=await launch();try{const calls=[];await app.evaluate(({ipcMain})=>{ipcMain.removeHandler('estudia:generate');ipcMain.handle('estudia:generate',async(_,p)=>{calls.push(p.id);return {ok:true,value:{text:'Respuesta lenta'}};});});await page.locator('#searchInput').fill('primera');await page.locator('#searchBtn').click();await page.locator('#searchInput').fill('segunda');await page.locator('#searchBtn').click();await page.locator('#searchInput').fill('tercera');await page.locator('#searchBtn').click();await expect.poll(()=>calls.length).toBe(3);await page.locator('[data-vista="materias"]').click();await expect(page.locator('#respuestas')).toBeHidden({timeout:2000});}finally{await close();}});
-test('malformed model response renders safely without broken question buttons',async()=>{const {app,page,close}=await launch();try{await app.evaluate(({ipcMain})=>{ipcMain.removeHandler('estudia:generate');ipcMain.handle('estudia:generate',()=>({ok:true,value:{text:'Respuesta sin pregunta final.'}}));});await page.locator('#searchInput').fill('algo');await page.locator('#searchBtn').click();await expect(page.locator('#respuestas')).toBeVisible({timeout:2500});await expect(page.locator('#respuestas button.btn-op')).toHaveCount(0);await expect(page.locator('#respuestas button#btn-entendi')).toHaveCount(1);}finally{await close();}});
-test('ask another question focuses Home and clears input',async()=>{const {app,page,close}=await launch();try{await app.evaluate(({ipcMain})=>{ipcMain.removeHandler('estudia:generate');ipcMain.handle('estudia:generate',()=>({ok:true,value:{text:'Respuesta.'}}));});await page.locator('#searchInput').fill('pregunta');await page.locator('#searchBtn').click();await expect(page.locator('#respuestas')).toBeVisible({timeout:2500});await page.locator('#btn-otra').click();await expect(page.locator('#searchInput')).toHaveValue('');await expect(page.locator('[data-vista="inicio"]')).toHaveAttribute('aria-current','page');}finally{await close();}});
-test('re-explain note uses previous topic and switches back to Home',async()=>{const {app,page,close}=await launch();try{await app.evaluate(({ipcMain})=>{ipcMain.removeHandler('estudia:generate');ipcMain.handle('estudia:generate',async(_,p)=>{return {ok:true,value:{text:'Reexplicación del apunte.'}};});});await page.locator('[data-vista="inicio"]').click();await page.locator('#uploadNotesBtn').click();const file=page.locator('#file-apuntes');await file.setInputFiles({name:'nota.pdf',mimeType:'application/pdf',buffer:Buffer.from('%PDF-1.7\n%Test')});await expect(page.locator('#upload-confirmation')).toBeVisible({timeout:2500});await page.locator('#upload-confirmation button:has-text("Analizar")').click();await expect(page.locator('#respuestas')).toBeVisible({timeout:2500});await page.locator('#btn-reexplicar').click();await expect(page.locator('#searchInput')).toHaveValue('');await expect(page.locator('[data-vista="inicio"]')).toHaveAttribute('aria-current','page');}finally{await close();}});
+const { test, expect } = require('@playwright/test');
+const { launch } = require('./helpers.cjs');
+
+async function installTutorMock(app) {
+  await app.evaluate(({ ipcMain }) => {
+    globalThis.__estudiaGenerateCalls = [];
+    ipcMain.removeHandler('estudia:generate');
+    ipcMain.handle('estudia:generate', async (_event, payload) => {
+      globalThis.__estudiaGenerateCalls.push(payload);
+      if (payload.text === 'lenta') {
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      return {
+        ok: true,
+        value: { text: `Respuesta para ${payload.text || payload.file?.name || 'apuntes'} en ${payload.course}.` }
+      };
+    });
+  });
+}
+
+test('subjects render and selecting one shows its units', async () => {
+  const { page, close } = await launch();
+  try {
+    await page.locator('[data-vista="materias"]').click();
+    await expect(page.locator('[data-subject]')).toHaveCount(6);
+    await page.locator('[data-subject="matematica"] button').click();
+    await expect(page.locator('#materias-cont')).toContainText('Álgebra');
+    await expect(page.locator('#materias-cont')).toContainText('Geometría');
+  } finally {
+    await close();
+  }
+});
+
+test('tutor sends the selected course and presents response controls', async () => {
+  const { app, page, close } = await launch();
+  try {
+    await installTutorMock(app);
+    await page.locator('#searchInput').fill('fracciones');
+    await page.locator('#searchBtn').click();
+    await expect(page.locator('#respuestas')).toContainText('Respuesta para fracciones en 7º básico.');
+    await expect(page.locator('#btn-entendi')).toBeVisible();
+    await expect(page.locator('#btn-otra')).toBeVisible();
+
+    await page.locator('#sel-curso').selectOption('8º básico');
+    await page.locator('#searchInput').fill('ecuaciones');
+    await page.locator('#searchBtn').click();
+    await expect(page.locator('#respuestas')).toContainText('Respuesta para ecuaciones en 8º básico.');
+  } finally {
+    await close();
+  }
+});
+
+test('a late tutor reply cannot overwrite a newer reply', async () => {
+  const { app, page, close } = await launch();
+  try {
+    await installTutorMock(app);
+    await page.locator('#searchInput').fill('lenta');
+    await page.locator('#searchBtn').click();
+    await page.locator('#searchInput').fill('rápida');
+    await page.locator('#searchBtn').click();
+    await expect(page.locator('#respuestas')).toContainText('Respuesta para rápida en 7º básico.');
+    await page.waitForTimeout(250);
+    await expect(page.locator('#respuestas')).not.toContainText('Respuesta para lenta');
+  } finally {
+    await close();
+  }
+});
+
+test('ask resolves after its response has rendered', async () => {
+  const { app, page, close } = await launch();
+  try {
+    await installTutorMock(app);
+    const rendered = await page.evaluate(async () => {
+      await window.Estudia.features.tutor.ask('lenta');
+      return document.getElementById('respuestas').textContent;
+    });
+    expect(rendered).toContain('Respuesta para lenta en 7º básico.');
+  } finally {
+    await close();
+  }
+});
