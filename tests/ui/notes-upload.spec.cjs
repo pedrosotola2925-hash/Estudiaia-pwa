@@ -43,6 +43,7 @@ test('cancel clears the pending note without sending it', async () => {
       mimeType: 'application/pdf',
       buffer: Buffer.from('%PDF-1.7\n%Test')
     });
+    await expect(page.locator('#confirm-cancel')).toBeVisible();
     await page.locator('#confirm-cancel').click();
     await expect(page.locator('#upload-confirmation')).toBeHidden();
     await expect.poll(() => app.evaluate(() => globalThis.__estudiaNoteCalls.length)).toBe(0);

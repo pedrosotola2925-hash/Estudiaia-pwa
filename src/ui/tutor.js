@@ -19,7 +19,7 @@
         const file = document.getElementById('file-apuntes').files[0];
         if (!file) return;
         try {
-          E.features.tutor.uploadNote(file);
+          await E.features.tutor.uploadNote(file);
         } finally {
           document.getElementById('file-apuntes').value = '';
         }
