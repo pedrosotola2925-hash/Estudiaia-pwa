@@ -12,15 +12,28 @@
     "test:ui": "playwright test --project=dev",
     "test:voice": ".build\\voice-venv\\Scripts\\python.exe -m unittest discover -s tests/voice -v",
     "test:all": "npm test && npm run test:voice",
-    "dist": "node scripts/build-voice.cjs && electron-builder --config electron-builder.json --win nsis --x64"
+    "dist": "node scripts/build-voice.cjs && electron-builder --config electron-builder.json --win nsis --x64",
+    "dev:pwa": "vite --config vite.config.ts",
+    "build:pwa": "vite build --config vite.config.ts --mode production",
+    "preview:pwa": "vite preview --config vite.config.ts --port 4173",
+    "test:pwa": "vitest run tests/pwa/build.test.ts"
   },
   "engines": {
     "node": ">=22.12.0"
   },
-  "overrides": {"global-agent": "4.1.3"},
+  "overrides": {
+    "global-agent": "4.1.3"
+  },
   "devDependencies": {
     "@playwright/test": "1.64.1",
+    "@types/node": "^22.7.4",
     "electron": "44.9.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "idb": "^8.0.0",
+    "sharp": "^0.35.5",
+    "vite": "^6.0.0",
+    "vite-plugin-pwa": "^0.21.1",
+    "vitest": "^3.0.0",
+    "workbox-window": "^7.3.0"
   }
 }

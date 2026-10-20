@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>EstudiaIA 2</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#3b82f6">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="EstudiaIA">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/src/ui/bootstrap.js"></script>
+</head>
+<body>
+<aside class="sidebar"><h1>EstudiaIA <span class="version">2</span></h1><p class="sub">Tu tutor personal</p><label for="sel-curso">Mi curso</label><select id="sel-curso"></select>
+<nav aria-label="Secciones"><button class="nav-item" data-vista="inicio">🏠 Inicio</button><button class="nav-item" data-vista="materias">📖 Materias</button><button class="nav-item" data-vista="aprender">📚 Aprender a estudiar</button><button class="nav-item" data-vista="practicas">✅ Prácticas</button><button class="nav-item" data-vista="videos">🎬 Vídeos</button><button class="nav-item" data-vista="progreso">📊 Progreso</button><button class="nav-item" data-vista="ajustes">⚙️ Ajustes</button></nav><p class="sidebar-note">Paso a paso, a tu ritmo.</p></aside>
+<main class="main" id="main"><header><span>¡Hola! 👋 ¿Qué aprendemos hoy?</span><span id="connection-status" class="badge"></span></header><div id="app-message" aria-live="polite"></div>
+<section id="vista-inicio" class="vista"><div class="card"><h2>¡Bienvenidos a EstudiaIA! 🌟</h2><p>Pregunta lo que quieras o elige una opción:</p><div class="quick"><button class="quick-card" id="card-prueba">📝<br>Tengo una prueba</button><button class="quick-card" id="card-estudiar">📚<br>Quiero aprender a estudiar</button><button class="quick-card" id="uploadNotesBtn">📤<br>Subir foto o PDF de apuntes</button></div><form id="question-form"><label for="searchInput">Tu pregunta</label><div class="buscador"><input id="searchInput" maxlength="20000" placeholder="Escribe tu pregunta…" autocomplete="off"><button id="searchBtn" class="btn" type="button">Preguntar</button></div></form><input type="file" id="file-apuntes" accept="image/jpeg,image/png,image/webp,application/pdf" hidden><div id="upload-confirmation"></div></div><div class="voicebar" aria-label="Lectura en voz alta"><label for="voice-select">Voz</label><select id="voice-select"></select><button id="voice-preview" class="btn secondary">Probar voz</button><button id="voice-play" class="btn" disabled>🔊 Escuchar</button><button id="voice-pause" class="btn secondary" disabled>Pausar</button><button id="voice-resume" class="btn secondary" disabled>Reanudar</button><button id="voice-stop" class="btn secondary" disabled>Detener</button><span id="voice-status" role="status"></span><audio id="tts-audio" preload="none"></audio></div><div id="respuestas" class="card" hidden></div></section>
+<section id="vista-materias" class="vista" hidden><div id="materias-cont"></div></section>
+<section id="vista-aprender" class="vista" hidden><h2>📚 Aprender a estudiar</h2><div id="estudiar-root"></div></section>
+<section id="vista-practicas" class="vista" hidden><h2>✅ Prácticas</h2><div class="fila"><label>Materia<select id="sel-materia"></select></label><label>Unidad<select id="sel-unidad"></select></label><button id="btn-crear-practica" class="btn">Crear práctica (5 preguntas)</button></div><div id="practice-status" role="status"></div><div id="zona-quiz"></div></section>
+<section id="vista-videos" class="vista" hidden><h2>🎬 Vídeos y lecciones</h2><div class="fila"><label>Materia<select id="sel-materia-v"></select></label><label>Unidad<select id="sel-unidad-v"></select></label><button id="btn-buscar-videos" class="btn">Buscar vídeos</button><button id="btn-leccion" class="btn verde">Crear lección interactiva</button></div><div id="video-status" role="status"></div><div id="zona-videos"></div></section>
+<section id="vista-progreso" class="vista" hidden><h2>📊 Mi progreso</h2><div id="progreso-cont"></div></section>
+<section id="vista-leccion" class="vista" hidden><div id="leccion-cont"></div></section>
+<section id="vista-ajustes" class="vista" hidden><h2>⚙️ Ajustes</h2><div class="card"><p>La IA y los vídeos necesitan internet y tus claves. Se guardan protegidas en este equipo, no dentro del instalador.</p><form id="settings-form" class="form-grid"><label>Clave de Gemini<input id="settings-gemini-key" type="password" autocomplete="off" maxlength="2000" placeholder="Deja vacío para conservar la clave guardada"></label><span id="gemini-configured"></span><label>Modelo Gemini<input id="settings-model" maxlength="100"></label><div class="fila"><button type="button" id="check-gemini" class="btn secondary">Probar Gemini</button><button type="button" id="clear-gemini" class="btn secondary">Borrar clave Gemini</button></div><label>Clave de YouTube<input id="settings-youtube-key" type="password" autocomplete="off" maxlength="2000" placeholder="Deja vacío para conservar la clave guardada"></label><span id="youtube-configured"></span><div class="fila"><button type="button" id="check-youtube" class="btn secondary">Probar YouTube</button><button type="button" id="clear-youtube" class="btn secondary">Borrar clave YouTube</button></div><label>Velocidad de lectura <output id="rate-label"></output><input id="settings-rate" type="range" min="-50" max="50" step="5"></label><button id="settings-save" class="btn" type="submit">Guardar ajustes</button></form><div id="settings-status" role="status"></div><p class="privacy">Privacidad: al preguntar o analizar un apunte, su contenido se envía a Google. Al usar Dalia o Catalina, el texto de la lectura se envía al servicio de voz de Microsoft. No envíes datos personales innecesarios. Estas voces necesitan internet.</p></div></section>
+</main>
+</body>
+</html>
