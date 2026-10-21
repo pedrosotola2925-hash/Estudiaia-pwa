@@ -135,4 +135,62 @@ describe('providers-web', () => {
       vi.restoreAllMocks();
     }
   });
+
+  it('generate conserva el tipo de solicitud al crear una práctica', async () => {
+    const store = newStore();
+    await store.unlock(MASTER_PASSWORD);
+    await store.set('geminiKey', 'gemini-test-key');
+
+    const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.systemInstruction.parts[0].text).toContain('exactamente cinco objetos');
+      expect(body.contents[0].parts[0].text).toContain('Curso: 7º básico');
+      expect(body.generationConfig.responseMimeType).toBe('application/json');
+      return jsonResponse({
+        candidates: [{ content: { parts: [{ text: '[{"p":"1 + 1","o":["1","2","3","4"],"c":1,"e":"Porque uno más uno es dos."}]' }] } }],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const providers = createProviderServiceWeb({ settingsStore: store });
+      await expect(providers.generate({
+        id: 'practice-1',
+        kind: 'practice',
+        course: '7º básico',
+        subjectId: 'matematica',
+        subjectName: 'Matemática',
+        unit: 'Álgebra',
+      })).resolves.toEqual({ text: '[{"p":"1 + 1","o":["1","2","3","4"],"c":1,"e":"Porque uno más uno es dos."}]' });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('cancela una generación web activa', async () => {
+    const store = newStore();
+    await store.unlock(MASTER_PASSWORD);
+    await store.set('geminiKey', 'gemini-test-key');
+
+    const fetchMock = vi.fn((_input: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const providers = createProviderServiceWeb({ settingsStore: store });
+      const request = providers.generate({
+        id: 'cancel-practice-1',
+        kind: 'practice',
+        course: '7º básico',
+        subjectId: 'matematica',
+        unit: 'Álgebra',
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      providers.cancel('cancel-practice-1');
+      await expect(request).rejects.toMatchObject({ code: 'CANCELLED' });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 });

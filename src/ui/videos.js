@@ -220,7 +220,13 @@
       frame.referrerPolicy = 'strict-origin-when-cross-origin';
       frame.allowFullscreen = true;
       frame.addEventListener('error', () => setStatus('No se pudo insertar este vídeo. Ábrelo en YouTube.', 'error'));
-      const external = E.ui.button('Abrir en YouTube', () => window.desktop.openVideo(video.id), 'btn secondary');
+      const external = E.ui.button('Abrir en YouTube', () => {
+        if (E.context) {
+          window.open(`https://www.youtube.com/watch?v=${encodeURIComponent(video.id)}`, '_blank', 'noopener,noreferrer');
+        } else {
+          window.desktop.openVideo(video.id);
+        }
+      }, 'btn secondary');
       const back = E.ui.button('Volver a resultados', () => {
         setStatus();
         renderResults();
