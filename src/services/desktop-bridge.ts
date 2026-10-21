@@ -18,6 +18,8 @@ interface SettingsBridge {
   getSettings(): Promise<SettingsSummary>;
   saveSettings(patch: SettingsPatch): Promise<SettingsSummary>;
   clearKey(provider: 'gemini' | 'youtube'): Promise<SettingsSummary>;
+  getSecret(provider: 'gemini' | 'youtube'): Promise<string>;
+  isLocked(): boolean;
 }
 
 type DesktopApi = Record<string, (...args: any[]) => unknown>;
@@ -40,7 +42,47 @@ function notImplemented(method: string) {
   });
 }
 
+function createProviderApi(settingsBridge: SettingsBridge): {
+  generate: (request: { kind?: string; course?: string; question?: string; context?: string; file?: unknown }) => Promise<{ text: string }>;
+  searchVideos: (request: { query: string }) => Promise<Array<{ id: string; title: string; thumbnail: string }>>;
+} {
+  // Importación dinámica para evitar ciclo si settings-bridge importa desktop-bridge
+  const providerPromise = import('@services/providers-web').then(
+    (mod) => mod.createProviderServiceWeb({
+      settingsStore: {
+        get: (key: string) => {
+          if (key === 'geminiKey' || key === 'youtubeKey') {
+            return settingsBridge.getSecret(key === 'geminiKey' ? 'gemini' : 'youtube');
+          }
+          return Promise.resolve(null);
+        },
+      },
+    }),
+  );
+
+  return {
+    generate: async (request) => {
+      const providers = await providerPromise;
+      if (settingsBridge.isLocked()) {
+        throw new Error('STORE_LOCKED');
+      }
+      const prompt = request.question ?? '';
+      const text = await providers.askGemini(prompt, request.kind === 'lesson' ? undefined : undefined);
+      return { text };
+    },
+    searchVideos: async (request) => {
+      const providers = await providerPromise;
+      if (settingsBridge.isLocked()) {
+        throw new Error('STORE_LOCKED');
+      }
+      return providers.searchYouTube(request.query, 10);
+    },
+  };
+}
+
 function createWebDesktopApi(settingsBridge: SettingsBridge | null): DesktopApi {
+  const providerApi = settingsBridge ? createProviderApi(settingsBridge) : null;
+
   return {
     getSettings: settingsBridge
       ? () => settingsBridge.getSettings()
@@ -51,8 +93,12 @@ function createWebDesktopApi(settingsBridge: SettingsBridge | null): DesktopApi 
     clearKey: settingsBridge
       ? (provider: 'gemini' | 'youtube') => settingsBridge.clearKey(provider)
       : unavailableSettingsOperation,
-    searchVideos: notImplemented('searchVideos'),
-    generate: notImplemented('generate'),
+    searchVideos: providerApi
+      ? providerApi.searchVideos
+      : notImplemented('searchVideos'),
+    generate: providerApi
+      ? providerApi.generate
+      : notImplemented('generate'),
     speak: notImplemented('speak'),
     cancel: notImplemented('cancel'),
     openVideo: notImplemented('openVideo'),

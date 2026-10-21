@@ -30,6 +30,7 @@ interface SettingsBridge {
   getSettings(): Promise<SettingsSummary>;
   saveSettings(patch: SettingsPatch): Promise<SettingsSummary>;
   clearKey(provider: 'gemini' | 'youtube'): Promise<SettingsSummary>;
+  getSecret(provider: 'gemini' | 'youtube'): Promise<string>;
   // Password management
   setMasterPassword(password: string): Promise<void>;
   unlock(password: string): Promise<void>;
@@ -50,6 +51,7 @@ function createBridge(): SettingsBridge {
     getSettings: () => store.getSummary(),
     saveSettings: (patch: SettingsPatch) => store.save(patch),
     clearKey: (provider: 'gemini' | 'youtube') => store.clearSecret(provider),
+    getSecret: (provider: 'gemini' | 'youtube') => store.getSecret(provider),
     setMasterPassword: (password: string) => store.setMasterPassword(password),
     unlock: (password: string) => store.unlock(password),
     lock: () => store.lock(),
