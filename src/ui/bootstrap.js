@@ -3,42 +3,8 @@
 // Web-compatible desktop API bridge - must initialize BEFORE init()
 async function initDesktopBridge() {
   if (typeof window !== 'undefined' && !window.desktop) {
-    try {
-      const { getSettingsBridge } = await import('@services/settings-bridge');
-      const bridge = getSettingsBridge();
-
-      window.desktop = {
-        // Settings bridge
-        getSettings: () => bridge.getSettings(),
-        saveSettings: (patch) => bridge.saveSettings(patch),
-        clearKey: (provider) => bridge.clearKey(provider),
-
-        // Placeholder methods for other IPC calls (implemented in later tasks)
-        searchVideos: async (req) => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'searchVideos not implemented yet' } }),
-        generate: async (req) => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'generate not implemented yet' } }),
-        speak: async (req) => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'speak not implemented yet' } }),
-        cancel: async (id) => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'cancel not implemented yet' } }),
-        openVideo: async (url) => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'openVideo not implemented yet' } }),
-        checkConnection: async (provider) => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'checkConnection not implemented yet' } }),
-      };
-
-      // Expose password management on bridge for settings UI
-      window.desktop._bridge = bridge;
-    } catch (e) {
-      console.error('[EstudiaIA] Failed to load desktop bridge:', e);
-      // Fallback to empty object to avoid crashes
-      window.desktop = {
-        getSettings: async () => ({ model: 'gemini-3.5-flash-lite', voice: 'es-MX-DaliaNeural', rate: -5, hasGeminiKey: false, hasYoutubeKey: false }),
-        saveSettings: async () => ({ model: 'gemini-3.5-flash-lite', voice: 'es-MX-DaliaNeural', rate: -5, hasGeminiKey: false, hasYoutubeKey: false }),
-        clearKey: async () => ({ model: 'gemini-3.5-flash-lite', voice: 'es-MX-DaliaNeural', rate: -5, hasGeminiKey: false, hasYoutubeKey: false }),
-        searchVideos: async () => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'Bridge not loaded' } }),
-        generate: async () => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'Bridge not loaded' } }),
-        speak: async () => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'Bridge not loaded' } }),
-        cancel: async () => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'Bridge not loaded' } }),
-        openVideo: async () => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'openVideo not implemented yet' } }),
-        checkConnection: async () => ({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: 'Bridge not loaded' } }),
-      };
-    }
+    const { initializeWebDesktopBridge } = await import('@services/desktop-bridge');
+    await initializeWebDesktopBridge(window);
   }
 }
 

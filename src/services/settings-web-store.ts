@@ -69,9 +69,11 @@ export function createSettingsStoreWebWrapper(options: {
   settingsStoreName?: string;
 } = {}): SettingsStoreWebWrapper {
   const dbName = options.dbName ?? 'estudiaia-settings';
-  const settingsDbName = options.settingsDbName ?? dbName;
+  // Keep encrypted records at the original Task 2 location: <dbName>/secrets.
+  // Plain settings use a distinct database so adding them cannot disturb legacy secrets.
+  const settingsDbName = options.settingsDbName ?? `${dbName}-settings`;
   const settingsStoreName = options.settingsStoreName ?? 'settings';
-  const secretsDbName = options.secretsDbName ?? `${dbName}-secrets`;
+  const secretsDbName = options.secretsDbName ?? dbName;
   const secretsStoreName = options.storeName ?? 'secrets';
 
   const secretsStore = createSettingsStoreWeb({

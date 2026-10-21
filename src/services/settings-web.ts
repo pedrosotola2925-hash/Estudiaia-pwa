@@ -50,6 +50,7 @@ const IV_LENGTH = 12; // bytes for AES-GCM
 const SALT_LENGTH = 32; // bytes (256 bits)
 const AUTO_LOCK_MS = 10 * 60 * 1000; // 10 minutes
 const MIN_MASTER_PASSWORD_LENGTH = 12;
+const STORE_LOCKED_MESSAGE = 'Store is locked';
 
 function isSecureContext(): boolean {
   return typeof window !== 'undefined' && window.isSecureContext === true;
@@ -75,7 +76,11 @@ function validateMasterPassword(password: string): void {
   }
 }
 
-async function deriveKey(passwordBytes: Uint8Array, salt: Uint8Array): Promise<CryptoKey> {
+async function deriveKey(
+  passwordBytes: Uint8Array,
+  salt: Uint8Array,
+  assertSessionActive: () => void,
+): Promise<CryptoKey> {
   const crypto = getWebCrypto();
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
@@ -84,8 +89,9 @@ async function deriveKey(passwordBytes: Uint8Array, salt: Uint8Array): Promise<C
     false,
     ['deriveKey']
   );
+  assertSessionActive();
 
-  return crypto.subtle.deriveKey(
+  const key = await crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
       salt,
@@ -97,12 +103,18 @@ async function deriveKey(passwordBytes: Uint8Array, salt: Uint8Array): Promise<C
     false,
     ['encrypt', 'decrypt']
   );
+  assertSessionActive();
+  return key;
 }
 
-async function encryptValue(value: string, passwordBytes: Uint8Array): Promise<EncryptedValue> {
+async function encryptValue(
+  value: string,
+  passwordBytes: Uint8Array,
+  assertSessionActive: () => void,
+): Promise<EncryptedValue> {
   const crypto = getWebCrypto();
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
-  const key = await deriveKey(passwordBytes, salt);
+  const key = await deriveKey(passwordBytes, salt, assertSessionActive);
   const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
   const data = new TextEncoder().encode(value);
   const ciphertext = await crypto.subtle.encrypt(
@@ -110,6 +122,7 @@ async function encryptValue(value: string, passwordBytes: Uint8Array): Promise<E
     key,
     data
   );
+  assertSessionActive();
 
   return {
     iv,
@@ -118,17 +131,25 @@ async function encryptValue(value: string, passwordBytes: Uint8Array): Promise<E
   };
 }
 
-async function decryptValue(encrypted: EncryptedValue, passwordBytes: Uint8Array): Promise<string | null> {
+async function decryptValue(
+  encrypted: EncryptedValue,
+  passwordBytes: Uint8Array,
+  assertSessionActive: () => void,
+): Promise<string | null> {
   const crypto = getWebCrypto();
   try {
-    const key = await deriveKey(passwordBytes, encrypted.salt);
+    const key = await deriveKey(passwordBytes, encrypted.salt, assertSessionActive);
     const decrypted = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: encrypted.iv },
       key,
       encrypted.ciphertext
     );
+    assertSessionActive();
     return new TextDecoder().decode(decrypted);
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === STORE_LOCKED_MESSAGE) {
+      throw error;
+    }
     // Wrong password or corrupted ciphertext. Secure-context failures happen before this catch.
     return null;
   }
@@ -192,6 +213,8 @@ export function createSettingsStoreWeb(options: {
   let locked = true;
   let sessionPassword: Uint8Array | null = null;
   let autoLockTimer: ReturnType<typeof setTimeout> | null = null;
+  let sessionExpiresAt: number | null = null;
+  let sessionEpoch = 0;
 
   async function getDB(): Promise<IDBPDatabase<SettingsDBSchema>> {
     if (db) return db;
@@ -205,11 +228,30 @@ export function createSettingsStoreWeb(options: {
     return db;
   }
 
-  function resetAutoLock(): void {
+  function scheduleAutoLock(): void {
     if (autoLockTimer) {
       clearTimeout(autoLockTimer);
     }
-    autoLockTimer = setTimeout(lock, AUTO_LOCK_MS);
+    if (locked || sessionExpiresAt === null) {
+      autoLockTimer = null;
+      return;
+    }
+
+    autoLockTimer = setTimeout(() => {
+      autoLockTimer = null;
+      if (locked) return;
+      if (sessionExpiresAt !== null && Date.now() >= sessionExpiresAt) {
+        lock();
+        return;
+      }
+      scheduleAutoLock();
+    }, Math.max(0, sessionExpiresAt - Date.now()));
+  }
+
+  function resetAutoLock(): void {
+    if (locked || !sessionPassword) return;
+    sessionExpiresAt = Date.now() + AUTO_LOCK_MS;
+    scheduleAutoLock();
   }
 
   function clearSessionPassword(): void {
@@ -221,7 +263,9 @@ export function createSettingsStoreWeb(options: {
   }
 
   function lock(): void {
+    sessionEpoch += 1;
     locked = true;
+    sessionExpiresAt = null;
     clearSessionPassword();
     if (autoLockTimer) {
       clearTimeout(autoLockTimer);
@@ -229,44 +273,81 @@ export function createSettingsStoreWeb(options: {
     }
   }
 
-  function requireActiveSession(): Uint8Array {
-    if (locked || !sessionPassword) {
-      throw new Error('Store is locked');
+  function expireSessionIfNeeded(): void {
+    if (!locked && sessionExpiresAt !== null && Date.now() >= sessionExpiresAt) {
+      lock();
     }
-    return sessionPassword;
+  }
+
+  function requireActiveSession(): { password: Uint8Array; epoch: number } {
+    expireSessionIfNeeded();
+    if (locked || !sessionPassword) {
+      throw new Error(STORE_LOCKED_MESSAGE);
+    }
+    return { password: sessionPassword, epoch: sessionEpoch };
+  }
+
+  function assertActiveSession(epoch: number): void {
+    const session = requireActiveSession();
+    if (session.epoch !== epoch) {
+      throw new Error(STORE_LOCKED_MESSAGE);
+    }
+  }
+
+  function assertUnlockStillCurrent(epoch: number): void {
+    if (sessionEpoch !== epoch || !locked) {
+      throw new Error(STORE_LOCKED_MESSAGE);
+    }
   }
 
   async function unlock(password: string): Promise<void> {
-    if (!locked) {
+    if (!isLocked()) {
       resetAutoLock();
       return;
     }
 
+    const unlockEpoch = sessionEpoch;
     getWebCrypto();
     validateMasterPassword(password);
     const candidatePassword = new TextEncoder().encode(password);
+    let activated = false;
 
     try {
       const database = await getDB();
+      assertUnlockStillCurrent(unlockEpoch);
       const keys = await database.getAllKeys(storeName);
+      assertUnlockStillCurrent(unlockEpoch);
       for (const key of keys) {
         const encrypted = await database.get(storeName, key);
-        if (encrypted && await decryptValue(encrypted, candidatePassword) === null) {
+        assertUnlockStillCurrent(unlockEpoch);
+        if (encrypted && await decryptValue(
+          encrypted,
+          candidatePassword,
+          () => assertUnlockStillCurrent(unlockEpoch),
+        ) === null) {
           throw new Error('Invalid password');
         }
+        assertUnlockStillCurrent(unlockEpoch);
       }
 
+      assertUnlockStillCurrent(unlockEpoch);
       sessionPassword = candidatePassword;
       locked = false;
       resetAutoLock();
+      activated = true;
     } catch (error) {
-      candidatePassword.fill(0);
-      lock();
+      if (!activated) {
+        candidatePassword.fill(0);
+      }
+      if (sessionEpoch === unlockEpoch && locked) {
+        lock();
+      }
       throw error;
     }
   }
 
   function isLocked(): boolean {
+    expireSessionIfNeeded();
     return locked;
   }
 
@@ -276,46 +357,69 @@ export function createSettingsStoreWeb(options: {
   }
 
   async function get(key: string): Promise<string | null> {
-    const password = requireActiveSession();
+    const session = requireActiveSession();
     getWebCrypto();
     const database = await getDB();
+    assertActiveSession(session.epoch);
     const encrypted = await database.get(storeName, key);
+    assertActiveSession(session.epoch);
     if (!encrypted) {
+      assertActiveSession(session.epoch);
       resetAutoLock();
       return null;
     }
 
-    const value = await decryptValue(encrypted, password);
+    const value = await decryptValue(
+      encrypted,
+      session.password,
+      () => assertActiveSession(session.epoch),
+    );
+    assertActiveSession(session.epoch);
     if (value === null) {
       lock();
       throw new Error('Encrypted setting could not be decrypted');
     }
+    assertActiveSession(session.epoch);
     resetAutoLock();
     return value;
   }
 
   async function set(key: string, value: string): Promise<void> {
-    const password = requireActiveSession();
+    const session = requireActiveSession();
     getWebCrypto();
-    const encrypted = await encryptValue(value, password);
+    const encrypted = await encryptValue(
+      value,
+      session.password,
+      () => assertActiveSession(session.epoch),
+    );
+    assertActiveSession(session.epoch);
     const database = await getDB();
+    // Do not start an IndexedDB write after the session generation changed.
+    assertActiveSession(session.epoch);
     await database.put(storeName, encrypted, key);
+    assertActiveSession(session.epoch);
     resetAutoLock();
   }
 
   async function remove(key: string): Promise<void> {
-    requireActiveSession();
+    const session = requireActiveSession();
     getWebCrypto();
     const database = await getDB();
+    // Do not start an IndexedDB write after the session generation changed.
+    assertActiveSession(session.epoch);
     await database.delete(storeName, key);
+    assertActiveSession(session.epoch);
     resetAutoLock();
   }
 
   async function clear(): Promise<void> {
-    requireActiveSession();
+    const session = requireActiveSession();
     getWebCrypto();
     const database = await getDB();
+    // Do not start an IndexedDB write after the session generation changed.
+    assertActiveSession(session.epoch);
     await database.clear(storeName);
+    assertActiveSession(session.epoch);
     resetAutoLock();
   }
 
