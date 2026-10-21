@@ -33,6 +33,8 @@ async function startPwa(): Promise<void> {
   await import('@ui/videos.js');
   await import('@shared/pomodoro.js');
   await import('@ui/estudiar.js');
+  const { createInstallPrompt } = await import('@ui/install-prompt.js');
+  createInstallPrompt();
 
   bindAppContextUi(context, {
     router: root.Estudia?.router ?? Object.create(null),

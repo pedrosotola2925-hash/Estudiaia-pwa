@@ -21,6 +21,7 @@ describe('PWA build', () => {
     expect(indexHtml).toContain('manifest.json');
     expect(indexHtml).toContain('theme-color');
     expect(indexHtml).toContain('apple-mobile-web-app-capable');
+    expect(indexHtml).toContain('id="install-btn"');
     expect(indexHtml).not.toContain('vite-plugin-pwa:register-sw');
     expect(indexHtml).not.toContain('/registerSW.js');
     
