@@ -8,8 +8,8 @@ import { openDB, DBSchema, IDBPDatabase } from 'idb';
  * - PBKDF2-SHA256 key derivation with 250,000 iterations
  * - Random 256-bit salt per key stored alongside ciphertext
  * - Auto-lock after 10 minutes of inactivity
- * - Password strength validation (min 8 chars, common password check)
- * - Per-request decryption with immediate key material zeroing
+ * - Master-password validation (min 12 chars, common-password rejection)
+ * - Closure-held typed password buffer cleared on lock, auto-lock, and unload
  * - No localStorage/sessionStorage usage
  */
 
@@ -49,6 +49,7 @@ const KEY_LENGTH = 256; // bits
 const IV_LENGTH = 12; // bytes for AES-GCM
 const SALT_LENGTH = 32; // bytes (256 bits)
 const AUTO_LOCK_MS = 10 * 60 * 1000; // 10 minutes
+const MIN_MASTER_PASSWORD_LENGTH = 12;
 
 function isSecureContext(): boolean {
   return typeof window !== 'undefined' && window.isSecureContext === true;
@@ -58,26 +59,33 @@ function hasWebCrypto(): boolean {
   return typeof window !== 'undefined' && !!window.crypto?.subtle;
 }
 
-function validatePasswordStrength(password: string): void {
-  if (password.length < 8) {
-    throw new Error('Password must be at least 8 characters');
+function getWebCrypto(): Crypto {
+  if (!isSecureContext() || !hasWebCrypto()) {
+    throw new Error('A secure context with Web Crypto is required for encrypted settings');
+  }
+  return window.crypto;
+}
+
+function validateMasterPassword(password: string): void {
+  if (typeof password !== 'string' || password.length < MIN_MASTER_PASSWORD_LENGTH) {
+    throw new Error(`Password must be at least ${MIN_MASTER_PASSWORD_LENGTH} characters`);
   }
   if (COMMON_PASSWORDS.has(password.toLowerCase())) {
     throw new Error('Password is too common, please choose a stronger one');
   }
 }
 
-async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
-  const encoder = new TextEncoder();
-  const keyMaterial = await window.crypto.subtle.importKey(
+async function deriveKey(passwordBytes: Uint8Array, salt: Uint8Array): Promise<CryptoKey> {
+  const crypto = getWebCrypto();
+  const keyMaterial = await crypto.subtle.importKey(
     'raw',
-    encoder.encode(password),
+    passwordBytes,
     'PBKDF2',
     false,
     ['deriveKey']
   );
 
-  return window.crypto.subtle.deriveKey(
+  return crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
       salt,
@@ -91,21 +99,18 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
   );
 }
 
-async function encryptValue(value: string, password: string): Promise<EncryptedValue> {
-  const salt = window.crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
-  const key = await deriveKey(password, salt);
-  const iv = window.crypto.getRandomValues(new Uint8Array(IV_LENGTH));
-  const encoder = new TextEncoder();
-  const data = encoder.encode(value);
-
-  const ciphertext = await window.crypto.subtle.encrypt(
+async function encryptValue(value: string, passwordBytes: Uint8Array): Promise<EncryptedValue> {
+  const crypto = getWebCrypto();
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
+  const key = await deriveKey(passwordBytes, salt);
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
+  const data = new TextEncoder().encode(value);
+  const ciphertext = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
     key,
     data
   );
 
-  // Zero the key material from memory (best effort)
-  // Note: JS doesn't allow true memory zeroing, but we dereference
   return {
     iv,
     ciphertext: new Uint8Array(ciphertext),
@@ -113,18 +118,18 @@ async function encryptValue(value: string, password: string): Promise<EncryptedV
   };
 }
 
-async function decryptValue(encrypted: EncryptedValue, password: string): Promise<string | null> {
+async function decryptValue(encrypted: EncryptedValue, passwordBytes: Uint8Array): Promise<string | null> {
+  const crypto = getWebCrypto();
   try {
-    const key = await deriveKey(password, encrypted.salt);
-    const decoder = new TextDecoder();
-    const decrypted = await window.crypto.subtle.decrypt(
+    const key = await deriveKey(passwordBytes, encrypted.salt);
+    const decrypted = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: encrypted.iv },
       key,
       encrypted.ciphertext
     );
-    return decoder.decode(decrypted);
+    return new TextDecoder().decode(decrypted);
   } catch {
-    // Decryption failed (wrong password or corrupted data)
+    // Wrong password or corrupted ciphertext. Secure-context failures happen before this catch.
     return null;
   }
 }
@@ -164,10 +169,11 @@ function storableToEncryptedValue(storable: Record<string, string>): EncryptedVa
 }
 
 export interface SettingsStoreWeb {
-  get(key: string, password: string): Promise<string | null>;
-  set(key: string, value: string, password: string): Promise<void>;
-  remove(key: string, password: string): Promise<void>;
-  clear(password: string): Promise<void>;
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  remove(key: string): Promise<void>;
+  clear(): Promise<void>;
+  has(key: string): Promise<boolean>;
   isEncryptionAvailable(): Promise<boolean>;
   isLocked(): boolean;
   lock(): void;
@@ -183,8 +189,8 @@ export function createSettingsStoreWeb(options: {
   const storeName = options.storeName ?? 'settings';
 
   let db: IDBPDatabase<SettingsDBSchema> | null = null;
-  let locked = false;
-  let unlockPassword: string | null = null;
+  let locked = true;
+  let sessionPassword: Uint8Array | null = null;
   let autoLockTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function getDB(): Promise<IDBPDatabase<SettingsDBSchema>> {
@@ -203,117 +209,112 @@ export function createSettingsStoreWeb(options: {
     if (autoLockTimer) {
       clearTimeout(autoLockTimer);
     }
-    autoLockTimer = setTimeout(() => {
-      lock();
-    }, AUTO_LOCK_MS);
+    autoLockTimer = setTimeout(lock, AUTO_LOCK_MS);
+  }
+
+  function clearSessionPassword(): void {
+    if (sessionPassword) {
+      // Best effort only: JavaScript cannot guarantee memory zeroisation.
+      sessionPassword.fill(0);
+      sessionPassword = null;
+    }
   }
 
   function lock(): void {
     locked = true;
-    unlockPassword = null;
+    clearSessionPassword();
     if (autoLockTimer) {
       clearTimeout(autoLockTimer);
       autoLockTimer = null;
     }
   }
 
-  async function unlock(password: string): Promise<void> {
-    if (!locked) return;
+  function requireActiveSession(): Uint8Array {
+    if (locked || !sessionPassword) {
+      throw new Error('Store is locked');
+    }
+    return sessionPassword;
+  }
 
-    // Verify password by attempting to decrypt a test value
-    // We need at least one stored value to verify
-    const database = await getDB();
-    const keys = await database.getAllKeys(storeName);
-    
-    if (keys.length > 0) {
-      // Try to decrypt the first key to verify password
-      const firstKey = keys[0];
-      const encrypted = await database.get(storeName, firstKey);
-      if (encrypted) {
-        const decrypted = await decryptValue(encrypted, password);
-        if (decrypted === null) {
+  async function unlock(password: string): Promise<void> {
+    if (!locked) {
+      resetAutoLock();
+      return;
+    }
+
+    getWebCrypto();
+    validateMasterPassword(password);
+    const candidatePassword = new TextEncoder().encode(password);
+
+    try {
+      const database = await getDB();
+      const keys = await database.getAllKeys(storeName);
+      for (const key of keys) {
+        const encrypted = await database.get(storeName, key);
+        if (encrypted && await decryptValue(encrypted, candidatePassword) === null) {
           throw new Error('Invalid password');
         }
       }
+
+      sessionPassword = candidatePassword;
+      locked = false;
+      resetAutoLock();
+    } catch (error) {
+      candidatePassword.fill(0);
+      lock();
+      throw error;
     }
-    // If no keys exist, accept the password (first unlock)
-    
-    locked = false;
-    unlockPassword = password;
-    resetAutoLock();
   }
 
   function isLocked(): boolean {
     return locked;
   }
 
-  async function get(key: string, password: string): Promise<string | null> {
-    if (locked) {
-      throw new Error('Store is locked');
-    }
-    validatePasswordStrength(password);
-    
+  async function has(key: string): Promise<boolean> {
+    const database = await getDB();
+    return (await database.getKey(storeName, key)) !== undefined;
+  }
+
+  async function get(key: string): Promise<string | null> {
+    const password = requireActiveSession();
+    getWebCrypto();
     const database = await getDB();
     const encrypted = await database.get(storeName, key);
-    if (!encrypted) return null;
-    
+    if (!encrypted) {
+      resetAutoLock();
+      return null;
+    }
+
     const value = await decryptValue(encrypted, password);
+    if (value === null) {
+      lock();
+      throw new Error('Encrypted setting could not be decrypted');
+    }
     resetAutoLock();
     return value;
   }
 
-  async function set(key: string, value: string, password: string): Promise<void> {
-    if (locked) {
-      throw new Error('Store is locked');
-    }
-    validatePasswordStrength(password);
-    
+  async function set(key: string, value: string): Promise<void> {
+    const password = requireActiveSession();
+    getWebCrypto();
     const encrypted = await encryptValue(value, password);
     const database = await getDB();
     await database.put(storeName, encrypted, key);
     resetAutoLock();
   }
 
-  async function remove(key: string, password: string): Promise<void> {
-    if (locked) {
-      throw new Error('Store is locked');
-    }
-    validatePasswordStrength(password);
-    
-    // Verify password by trying to decrypt first
+  async function remove(key: string): Promise<void> {
+    requireActiveSession();
+    getWebCrypto();
     const database = await getDB();
-    const encrypted = await database.get(storeName, key);
-    if (encrypted) {
-      const decrypted = await decryptValue(encrypted, password);
-      if (decrypted === null) {
-        throw new Error('Invalid password');
-      }
-    }
-    
     await database.delete(storeName, key);
     resetAutoLock();
   }
 
-  async function clear(password: string): Promise<void> {
-    if (locked) {
-      throw new Error('Store is locked');
-    }
-    validatePasswordStrength(password);
-    
-    // Verify password by trying to decrypt all keys
+  async function clear(): Promise<void> {
+    requireActiveSession();
+    getWebCrypto();
     const database = await getDB();
-    const keys = await database.getAllKeys(storeName);
-    
-    for (const key of keys) {
-      const encrypted = await database.get(storeName, key);
-      if (encrypted) {
-        const decrypted = await decryptValue(encrypted, password);
-        if (decrypted === null) {
-          throw new Error('Invalid password');
-        }
-      }
-    }
-    
     await database.clear(storeName);
     resetAutoLock();
   }
@@ -323,17 +324,11 @@ export function createSettingsStoreWeb(options: {
   }
 
   async function migrateFromElectron(_electronData: unknown): Promise<{ success: boolean; reason?: string }> {
-    // Cannot decrypt Electron safeStorage data without Electron's native module
     return { success: false, reason: 'requires-electron-safeStorage' };
   }
 
-  // Cleanup on page unload
-  if (typeof window !== 'undefined') {
-    window.addEventListener('beforeunload', () => {
-      if (autoLockTimer) {
-        clearTimeout(autoLockTimer);
-      }
-    });
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('beforeunload', lock);
   }
 
   return {
@@ -341,6 +336,7 @@ export function createSettingsStoreWeb(options: {
     set,
     remove,
     clear,
+    has,
     isEncryptionAvailable,
     isLocked,
     lock,

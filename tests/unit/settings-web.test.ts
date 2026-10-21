@@ -1,222 +1,206 @@
-import { describe, it, expect, beforeEach, vi, beforeAll, afterAll } from 'vitest';
+import 'fake-indexeddb/auto';
+import { webcrypto } from 'node:crypto';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { DBSchema, openDB } from 'idb';
 import { createSettingsStoreWeb } from '@services/settings-web';
-import { 
-  indexedDB as fakeIndexedDB, 
-  IDBRequest, 
-  IDBDatabase, 
-  IDBTransaction, 
-  IDBObjectStore, 
-  IDBIndex, 
-  IDBOpenDBRequest, 
-  IDBVersionChangeEvent, 
-  IDBFactory,
-  IDBKeyRange,
-  IDBCursor,
-  IDBCursorWithValue
-} from 'fake-indexeddb';
+import { createSettingsStoreWebWrapper } from '@services/settings-web-store';
+import { getSettingsBridge, resetSettingsBridge } from '@services/settings-bridge';
 
-// Mock Web Crypto API for Node.js test environment
-const mockCrypto = {
-  subtle: {
-    importKey: vi.fn(),
-    deriveKey: vi.fn(),
-    encrypt: vi.fn(),
-    decrypt: vi.fn(),
-  },
-  getRandomValues: vi.fn((arr: Uint8Array) => {
-    for (let i = 0; i < arr.length; i++) {
-      arr[i] = Math.floor(Math.random() * 256);
-    }
-    return arr;
-  }),
-};
+const MASTER_PASSWORD = 'CorrectHorseBatteryStaple!2026';
+const WRONG_PASSWORD = 'WrongHorseBatteryStaple!2026';
+const EXAMPLE_SECRET = 'example-secret-value-123!';
 
-// Mock window object
-const mockWindow = {
-  crypto: mockCrypto,
+interface EncryptedRecord {
+  iv: Uint8Array;
+  ciphertext: Uint8Array;
+  salt: Uint8Array;
+}
+
+interface SecretsTestDatabase extends DBSchema {
+  secrets: {
+    key: string;
+    value: EncryptedRecord;
+  };
+}
+
+const testWindow = {
+  crypto: webcrypto as unknown as Crypto,
   isSecureContext: true,
   addEventListener: vi.fn(),
-  removeEventListener: vi.fn(),
 };
 
-// Store original global
-const originalWindow = global.window;
-const originalIndexedDB = global.indexedDB;
+let databaseSequence = 0;
+
+function nextDatabaseName(prefix: string): string {
+  databaseSequence += 1;
+  return `${prefix}-${databaseSequence}`;
+}
 
 beforeAll(() => {
-  // @ts-expect-error - mocking window for tests
-  global.window = mockWindow;
-  // @ts-expect-error - use fake-indexeddb
-  global.indexedDB = fakeIndexedDB;
-  // @ts-expect-error - expose IndexedDB classes globally for idb library
-  global.IDBRequest = IDBRequest;
-  global.IDBDatabase = IDBDatabase;
-  global.IDBTransaction = IDBTransaction;
-  global.IDBObjectStore = IDBObjectStore;
-  global.IDBIndex = IDBIndex;
-  global.IDBOpenDBRequest = IDBOpenDBRequest;
-  global.IDBVersionChangeEvent = IDBVersionChangeEvent;
-  global.IDBFactory = IDBFactory;
-  global.IDBKeyRange = IDBKeyRange;
-  global.IDBCursor = IDBCursor;
-  global.IDBCursorWithValue = IDBCursorWithValue;
-  global.DOMException = DOMException;
-  global.Event = Event;
-  
-  // Setup default mock implementations
-  let keyCounter = 0;
-  mockCrypto.subtle.importKey.mockImplementation(() => Promise.resolve({ type: 'key', id: keyCounter++ }));
-  mockCrypto.subtle.deriveKey.mockImplementation(() => Promise.resolve({ type: 'derived-key', id: keyCounter++ }));
-  mockCrypto.subtle.encrypt.mockImplementation((_algo: unknown, _key: unknown, data: Uint8Array) => 
-    Promise.resolve(new Uint8Array([...data, 0x01, 0x02, 0x03, 0x04]).buffer)
-  );
-  mockCrypto.subtle.decrypt.mockImplementation((_algo: unknown, _key: unknown, data: Uint8Array) => 
-    Promise.resolve(data.slice(0, -4).buffer)
-  );
+  vi.stubGlobal('window', testWindow);
 });
 
 afterAll(() => {
-  global.window = originalWindow;
-  // @ts-expect-error - restoring indexedDB
-  global.indexedDB = originalIndexedDB;
-  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
-describe('settings-web', () => {
-  let store: ReturnType<typeof createSettingsStoreWeb>;
+describe('encrypted web settings store', () => {
+  it('starts locked and rejects every encrypted secret operation', async () => {
+    const store = createSettingsStoreWeb({
+      dbName: nextDatabaseName('locked-by-default'),
+      storeName: 'secrets',
+    });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    
-    // Reset mock implementations
-    let keyCounter = 0;
-    mockCrypto.subtle.importKey.mockImplementation(() => Promise.resolve({ type: 'key', id: keyCounter++ }));
-    mockCrypto.subtle.deriveKey.mockImplementation(() => Promise.resolve({ type: 'derived-key', id: keyCounter++ }));
-    mockCrypto.subtle.encrypt.mockImplementation((_algo: unknown, _key: unknown, data: Uint8Array) => 
-      Promise.resolve(new Uint8Array([...data, 0x01, 0x02, 0x03, 0x04]).buffer)
-    );
-    mockCrypto.subtle.decrypt.mockImplementation((_algo: unknown, _key: unknown, data: Uint8Array) => 
-      Promise.resolve(data.slice(0, -4).buffer)
-    );
-
-    store = createSettingsStoreWeb({ dbName: 'test-settings', storeName: 'test-store' });
-  });
-
-  it('encrypts and decrypts settings with password-derived key', async () => {
-    await store.set('geminiKey', 'test-key-123', 'strong-password-123');
-    const value = await store.get('geminiKey', 'strong-password-123');
-    expect(value).toBe('test-key-123');
-  });
-
-  it('returns null for wrong password', async () => {
-    await store.set('key', 'value', 'correct-password-123');
-    // Mock decrypt to return null for wrong password
-    mockCrypto.subtle.decrypt.mockRejectedValueOnce(new Error('Decryption failed'));
-    const value = await store.get('key', 'wrong-password-456');
-    expect(value).toBeNull();
-  });
-
-  it('isEncryptionAvailable returns true in secure context', async () => {
-    expect(await store.isEncryptionAvailable()).toBe(true);
-  });
-
-  it('returns null for non-existent key', async () => {
-    const value = await store.get('nonexistent', 'valid-password-123');
-    expect(value).toBeNull();
-  });
-
-  it('removes a key', async () => {
-    await store.set('key', 'value', 'valid-password-123');
-    await store.remove('key', 'valid-password-123');
-    const value = await store.get('key', 'valid-password-123');
-    expect(value).toBeNull();
-  });
-
-  it('clears all keys', async () => {
-    await store.set('key1', 'value1', 'valid-password-123');
-    await store.set('key2', 'value2', 'valid-password-123');
-    await store.clear('valid-password-123');
-    const value1 = await store.get('key1', 'valid-password-123');
-    const value2 = await store.get('key2', 'valid-password-123');
-    expect(value1).toBeNull();
-    expect(value2).toBeNull();
-  });
-
-  it('migrateFromElectron returns failure without Electron', async () => {
-    const result = await store.migrateFromElectron({});
-    expect(result.success).toBe(false);
-    expect(result.reason).toBe('requires-electron-safeStorage');
-  });
-
-  it('lock and unlock functionality', async () => {
-    await store.set('key', 'value', 'valid-password-123');
-    expect(store.isLocked()).toBe(false);
-    store.lock();
     expect(store.isLocked()).toBe(true);
-    await expect(store.get('key', 'valid-password-123')).rejects.toThrow('Store is locked');
-    await store.unlock('valid-password-123');
-    expect(store.isLocked()).toBe(false);
-    const value = await store.get('key', 'valid-password-123');
-    expect(value).toBe('value');
+    await expect(store.get('geminiKey')).rejects.toThrow(/locked/i);
+    await expect(store.set('geminiKey', EXAMPLE_SECRET)).rejects.toThrow(/locked/i);
+    await expect(store.remove('geminiKey')).rejects.toThrow(/locked/i);
+    await expect(store.clear()).rejects.toThrow(/locked/i);
   });
 
-  it('wrong password on unlock throws', async () => {
-    await store.set('key', 'value', 'valid-password-123');
-    store.lock();
-    // Mock decrypt to fail for wrong password
-    mockCrypto.subtle.decrypt.mockRejectedValueOnce(new Error('Decryption failed'));
-    await expect(store.unlock('wrong-password-456')).rejects.toThrow('Invalid password');
+  it('requires a strong master password before a first unlock', async () => {
+    const store = createSettingsStoreWeb({
+      dbName: nextDatabaseName('strong-first-unlock'),
+      storeName: 'secrets',
+    });
+
+    await expect(store.unlock('short')).rejects.toThrow(/password/i);
     expect(store.isLocked()).toBe(true);
   });
 
-  it('auto-locks after inactivity', async () => {
-    // Test auto-lock by directly calling lock() since fake timers interfere with fake-indexeddb
-    await store.set('key', 'value', 'valid-password-123');
+  it('uses the explicitly unlocked session to encrypt and decrypt a secret', async () => {
+    const store = createSettingsStoreWeb({
+      dbName: nextDatabaseName('first-unlock'),
+      storeName: 'secrets',
+    });
+
+    await store.unlock(MASTER_PASSWORD);
+    await store.set('geminiKey', EXAMPLE_SECRET);
+
     expect(store.isLocked()).toBe(false);
+    await expect(store.get('geminiKey')).resolves.toBe(EXAMPLE_SECRET);
+  });
+
+  it('keeps the store locked after an incorrect unlock when encrypted data exists', async () => {
+    const store = createSettingsStoreWeb({
+      dbName: nextDatabaseName('wrong-unlock'),
+      storeName: 'secrets',
+    });
+
+    await store.unlock(MASTER_PASSWORD);
+    await store.set('geminiKey', EXAMPLE_SECRET);
     store.lock();
+
+    await expect(store.unlock(WRONG_PASSWORD)).rejects.toThrow(/invalid password/i);
     expect(store.isLocked()).toBe(true);
-    // Verify that operations fail when locked
-    await expect(store.get('key', 'valid-password-123')).rejects.toThrow('Store is locked');
-    await store.unlock('valid-password-123');
-    expect(store.isLocked()).toBe(false);
-    const value = await store.get('key', 'valid-password-123');
-    expect(value).toBe('value');
+    await expect(store.get('geminiKey')).rejects.toThrow(/locked/i);
   });
 
-  it('different passwords for different keys work independently', async () => {
-    await store.set('key1', 'value1', 'password-one-123');
-    await store.set('key2', 'value2', 'password-two-456');
-    const v1 = await store.get('key1', 'password-one-123');
-    const v2 = await store.get('key2', 'password-two-456');
-    expect(v1).toBe('value1');
-    expect(v2).toBe('value2');
-    // Wrong password for key1 - should return null
-    mockCrypto.subtle.decrypt.mockRejectedValueOnce(new Error('Decryption failed'));
-    const result = await store.get('key1', 'password-two-456');
-    expect(result).toBeNull();
+  it('persists a ciphertext record with a 256-bit salt instead of the secret plaintext', async () => {
+    const dbName = nextDatabaseName('encrypted-record');
+    const store = createSettingsStoreWeb({ dbName, storeName: 'secrets' });
+
+    await store.unlock(MASTER_PASSWORD);
+    await store.set('geminiKey', EXAMPLE_SECRET);
+
+    const database = await openDB<SecretsTestDatabase>(dbName);
+    const record = await database.get('secrets', 'geminiKey');
+    database.close();
+
+    if (!record) {
+      throw new Error('Expected encrypted secret record');
+    }
+    expect(record.salt).toHaveLength(32);
+    expect(record.iv).toHaveLength(12);
+    expect(new TextDecoder().decode(record.ciphertext)).not.toContain(EXAMPLE_SECRET);
   });
 
-  it('throws on password less than 8 characters', async () => {
-    await expect(store.set('key', 'value', 'short')).rejects.toThrow('Password must be at least 8 characters');
+  it('rejects encrypted operations outside a secure context', async () => {
+    const store = createSettingsStoreWeb({
+      dbName: nextDatabaseName('insecure-context'),
+      storeName: 'secrets',
+    });
+    testWindow.isSecureContext = false;
+
+    try {
+      await expect(store.isEncryptionAvailable()).resolves.toBe(false);
+      await expect(store.unlock(MASTER_PASSWORD)).rejects.toThrow(/secure context/i);
+      expect(store.isLocked()).toBe(true);
+    } finally {
+      testWindow.isSecureContext = true;
+    }
+  });
+});
+
+describe('web settings wrapper', () => {
+  it('saves non-secret settings while the encrypted store remains locked', async () => {
+    const dbName = nextDatabaseName('non-secret-while-locked');
+    const wrapper = createSettingsStoreWebWrapper({ dbName });
+
+    expect(wrapper.isLocked()).toBe(true);
+    await expect(wrapper.save({ model: 'gemini-2.0-flash' })).resolves.toMatchObject({
+      model: 'gemini-2.0-flash',
+    });
+    expect(wrapper.isLocked()).toBe(true);
+
+    const reloaded = createSettingsStoreWebWrapper({ dbName });
+    await expect(reloaded.getSummary()).resolves.toMatchObject({
+      model: 'gemini-2.0-flash',
+    });
   });
 
-  it('throws on common password', async () => {
-    await expect(store.set('key', 'value', '12345678')).rejects.toThrow('Password is too common');
+  it('treats blank secret form fields as unchanged while locked', async () => {
+    const wrapper = createSettingsStoreWebWrapper({
+      dbName: nextDatabaseName('blank-secret-form-fields'),
+    });
+
+    await wrapper.unlock(MASTER_PASSWORD);
+    await wrapper.save({ geminiKey: EXAMPLE_SECRET });
+    wrapper.lock();
+
+    await expect(wrapper.save({
+      model: 'gemini-2.0-flash',
+      geminiKey: '',
+      youtubeKey: '',
+    })).resolves.toMatchObject({
+      model: 'gemini-2.0-flash',
+      hasGeminiKey: true,
+    });
+    expect(wrapper.isLocked()).toBe(true);
   });
 
-  it('isEncryptionAvailable returns false when not in secure context', async () => {
-    mockWindow.isSecureContext = false;
-    const store2 = createSettingsStoreWeb({ dbName: 'test-settings-2' });
-    expect(await store2.isEncryptionAvailable()).toBe(false);
-    mockWindow.isSecureContext = true;
-  });
+  it('persists, reads, and clears an encrypted secret through the active wrapper session', async () => {
+    const wrapper = createSettingsStoreWebWrapper({
+      dbName: nextDatabaseName('wrapper-secret-lifecycle'),
+    });
 
-  it('isEncryptionAvailable returns false when crypto.subtle is missing', async () => {
-    const originalSubtle = mockWindow.crypto.subtle;
-    // @ts-expect-error - removing subtle for test
-    mockWindow.crypto.subtle = undefined;
-    const store2 = createSettingsStoreWeb({ dbName: 'test-settings-3' });
-    expect(await store2.isEncryptionAvailable()).toBe(false);
-    mockWindow.crypto.subtle = originalSubtle;
+    await wrapper.unlock(MASTER_PASSWORD);
+    await wrapper.save({ geminiKey: EXAMPLE_SECRET });
+
+    await expect(wrapper.getSecret('gemini')).resolves.toBe(EXAMPLE_SECRET);
+    await expect(wrapper.getSummary()).resolves.toMatchObject({ hasGeminiKey: true });
+
+    await wrapper.clearSecret('gemini');
+    await expect(wrapper.getSecret('gemini')).resolves.toBe('');
+    await expect(wrapper.getSummary()).resolves.toMatchObject({ hasGeminiKey: false });
+  });
+});
+
+describe('web settings bridge', () => {
+  it('delegates setup, encrypted save, lock, unlock, and clear to the wrapper store', async () => {
+    resetSettingsBridge();
+    const bridge = getSettingsBridge();
+
+    expect(bridge.isLocked()).toBe(true);
+    await bridge.setMasterPassword(MASTER_PASSWORD);
+    await bridge.saveSettings({ youtubeKey: EXAMPLE_SECRET });
+    await expect(bridge.getSettings()).resolves.toMatchObject({ hasYoutubeKey: true });
+
+    bridge.lock();
+    await expect(bridge.saveSettings({ youtubeKey: EXAMPLE_SECRET })).rejects.toThrow(/unlock|locked/i);
+
+    await bridge.unlock(MASTER_PASSWORD);
+    await bridge.clearKey('youtube');
+    await expect(bridge.getSettings()).resolves.toMatchObject({ hasYoutubeKey: false });
   });
 });
