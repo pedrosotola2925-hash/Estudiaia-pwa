@@ -210,22 +210,41 @@ export function createSettingsStoreWeb(options: {
   const storeName = options.storeName ?? 'settings';
 
   let db: IDBPDatabase<SettingsDBSchema> | null = null;
+  let dbPromise: Promise<IDBPDatabase<SettingsDBSchema>> | null = null;
   let locked = true;
   let sessionPassword: Uint8Array | null = null;
   let autoLockTimer: ReturnType<typeof setTimeout> | null = null;
   let sessionExpiresAt: number | null = null;
   let sessionEpoch = 0;
+  const activeWriteTransactions = new Set<{ abort(): void }>();
 
   async function getDB(): Promise<IDBPDatabase<SettingsDBSchema>> {
     if (db) return db;
-    db = await openDB<SettingsDBSchema>(dbName, 1, {
-      upgrade(database) {
-        if (!database.objectStoreNames.contains(storeName)) {
-          database.createObjectStore(storeName);
+    if (!dbPromise) {
+      dbPromise = (async () => {
+        const existingDatabase = await openDB<SettingsDBSchema>(dbName);
+        if (existingDatabase.objectStoreNames.contains(storeName)) {
+          return existingDatabase;
         }
-      },
-    });
-    return db;
+
+        const nextVersion = existingDatabase.version + 1;
+        existingDatabase.close();
+        return openDB<SettingsDBSchema>(dbName, nextVersion, {
+          upgrade(database) {
+            if (!database.objectStoreNames.contains(storeName)) {
+              database.createObjectStore(storeName);
+            }
+          },
+        });
+      })().then((database) => {
+        db = database;
+        return database;
+      }).catch((error) => {
+        dbPromise = null;
+        throw error;
+      });
+    }
+    return dbPromise;
   }
 
   function scheduleAutoLock(): void {
@@ -266,6 +285,13 @@ export function createSettingsStoreWeb(options: {
     sessionEpoch += 1;
     locked = true;
     sessionExpiresAt = null;
+    for (const transaction of activeWriteTransactions) {
+      try {
+        transaction.abort();
+      } catch {
+        // A transaction that already completed cannot be aborted.
+      }
+    }
     clearSessionPassword();
     if (autoLockTimer) {
       clearTimeout(autoLockTimer);
@@ -297,6 +323,51 @@ export function createSettingsStoreWeb(options: {
   function assertUnlockStillCurrent(epoch: number): void {
     if (sessionEpoch !== epoch || !locked) {
       throw new Error(STORE_LOCKED_MESSAGE);
+    }
+  }
+
+  async function commitWrite(
+    session: { password: Uint8Array; epoch: number },
+    operation: (store: {
+      put(value: EncryptedValue, key: string): Promise<unknown>;
+      delete(key: string): Promise<void>;
+      clear(): Promise<void>;
+    }) => Promise<unknown>,
+  ): Promise<void> {
+    const database = await getDB();
+    // Revalidate before creating a readwrite transaction and again before its commit boundary.
+    assertActiveSession(session.epoch);
+    const transaction = database.transaction(storeName, 'readwrite') as unknown as {
+      abort(): void;
+      commit(): void;
+      done: Promise<void>;
+      store: {
+        put(value: EncryptedValue, key: string): Promise<unknown>;
+        delete(key: string): Promise<void>;
+        clear(): Promise<void>;
+      };
+    };
+    activeWriteTransactions.add(transaction);
+    const transactionCompletion = transaction.done;
+    // Lock can abort before a delayed request settles; observe completion now so
+    // its AbortError cannot become an unhandled rejection while awaiting the request.
+    void transactionCompletion.catch(() => undefined);
+
+    try {
+      assertActiveSession(session.epoch);
+      await operation(transaction.store);
+      // This is the final cancellation point: lock/expiry aborts tracked transactions
+      // until the session has been revalidated and this explicit commit begins.
+      assertActiveSession(session.epoch);
+      transaction.commit();
+      await transactionCompletion;
+      assertActiveSession(session.epoch);
+    } catch (error) {
+      // An abort caused by lock/expiry must surface as a locked-session failure.
+      assertActiveSession(session.epoch);
+      throw error;
+    } finally {
+      activeWriteTransactions.delete(transaction);
     }
   }
 
@@ -393,33 +464,21 @@ export function createSettingsStoreWeb(options: {
       () => assertActiveSession(session.epoch),
     );
     assertActiveSession(session.epoch);
-    const database = await getDB();
-    // Do not start an IndexedDB write after the session generation changed.
-    assertActiveSession(session.epoch);
-    await database.put(storeName, encrypted, key);
-    assertActiveSession(session.epoch);
+    await commitWrite(session, (store) => store.put(encrypted, key));
     resetAutoLock();
   }
 
   async function remove(key: string): Promise<void> {
     const session = requireActiveSession();
     getWebCrypto();
-    const database = await getDB();
-    // Do not start an IndexedDB write after the session generation changed.
-    assertActiveSession(session.epoch);
-    await database.delete(storeName, key);
-    assertActiveSession(session.epoch);
+    await commitWrite(session, (store) => store.delete(key));
     resetAutoLock();
   }
 
   async function clear(): Promise<void> {
     const session = requireActiveSession();
     getWebCrypto();
-    const database = await getDB();
-    // Do not start an IndexedDB write after the session generation changed.
-    assertActiveSession(session.epoch);
-    await database.clear(storeName);
-    assertActiveSession(session.epoch);
+    await commitWrite(session, (store) => store.clear());
     resetAutoLock();
   }
 

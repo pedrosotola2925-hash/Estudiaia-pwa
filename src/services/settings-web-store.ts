@@ -1,4 +1,4 @@
-import { openDB, type DBSchema } from 'idb';
+import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import { createSettingsStoreWeb } from './settings-web.ts';
 
 const VOICES = ['es-MX-DaliaNeural', 'es-CL-CatalinaNeural'] as const;
@@ -69,28 +69,75 @@ export function createSettingsStoreWebWrapper(options: {
   settingsStoreName?: string;
 } = {}): SettingsStoreWebWrapper {
   const dbName = options.dbName ?? 'estudiaia-settings';
-  // Keep encrypted records at the original Task 2 location: <dbName>/secrets.
-  // Plain settings use a distinct database so adding them cannot disturb legacy secrets.
+  // New plaintext settings live separately, while reads also fall back to cccbdb2's
+  // <dbName>/settings layout without modifying it.
   const settingsDbName = options.settingsDbName ?? `${dbName}-settings`;
   const settingsStoreName = options.settingsStoreName ?? 'settings';
+  const legacySettingsDbName = options.settingsDbName === undefined && settingsDbName !== dbName
+    ? dbName
+    : null;
+  // Keep encrypted records at the original Task 2 location: <dbName>/secrets.
+  // cccbdb2 stored the same records at <dbName>-secrets/secrets, so retain a
+  // read fallback instead of moving or discarding legacy ciphertext.
   const secretsDbName = options.secretsDbName ?? dbName;
   const secretsStoreName = options.storeName ?? 'secrets';
+  const legacySecretsDbName = `${dbName}-secrets`;
 
   const secretsStore = createSettingsStoreWeb({
     dbName: secretsDbName,
     storeName: secretsStoreName,
   });
+  const legacySecretsStore = options.secretsDbName === undefined && legacySecretsDbName !== secretsDbName
+    ? createSettingsStoreWeb({
+      dbName: legacySecretsDbName,
+      storeName: secretsStoreName,
+    })
+    : null;
 
   let settingsCache: PlainSettings | null = null;
+  let settingsDatabase: IDBPDatabase<PlainSettingsDBSchema> | null = null;
+  let settingsDatabasePromise: Promise<IDBPDatabase<PlainSettingsDBSchema>> | null = null;
 
   async function getSettingsDB() {
-    return openDB<PlainSettingsDBSchema>(settingsDbName, 1, {
-      upgrade(database) {
-        if (!database.objectStoreNames.contains(settingsStoreName)) {
-          database.createObjectStore(settingsStoreName);
+    if (settingsDatabase) return settingsDatabase;
+    if (!settingsDatabasePromise) {
+      settingsDatabasePromise = (async () => {
+        const existingDatabase = await openDB<PlainSettingsDBSchema>(settingsDbName);
+        if (existingDatabase.objectStoreNames.contains(settingsStoreName)) {
+          return existingDatabase;
         }
-      },
-    });
+
+        const nextVersion = existingDatabase.version + 1;
+        existingDatabase.close();
+        return openDB<PlainSettingsDBSchema>(settingsDbName, nextVersion, {
+          upgrade(database) {
+            if (!database.objectStoreNames.contains(settingsStoreName)) {
+              database.createObjectStore(settingsStoreName);
+            }
+          },
+        });
+      })().then((database) => {
+        settingsDatabase = database;
+        return database;
+      }).catch((error) => {
+        settingsDatabasePromise = null;
+        throw error;
+      });
+    }
+    return settingsDatabasePromise;
+  }
+
+  async function loadLegacySettings(): Promise<PlainSettings | null> {
+    if (!legacySettingsDbName) return null;
+    const database = await openDB<PlainSettingsDBSchema>(legacySettingsDbName);
+    try {
+      if (!database.objectStoreNames.contains(settingsStoreName)) {
+        return null;
+      }
+      return (await database.get(settingsStoreName, 'config')) ?? null;
+    } finally {
+      database.close();
+    }
   }
 
   async function loadSettings(): Promise<PlainSettings> {
@@ -100,6 +147,11 @@ export function createSettingsStoreWebWrapper(options: {
     if (stored) {
       settingsCache = stored;
       return stored;
+    }
+    const legacySettings = await loadLegacySettings();
+    if (legacySettings) {
+      settingsCache = legacySettings;
+      return legacySettings;
     }
     settingsCache = { ...DEFAULT_SETTINGS };
     return settingsCache;
@@ -123,11 +175,16 @@ export function createSettingsStoreWebWrapper(options: {
     return Number.isInteger(rate) && rate >= -50 && rate <= 50;
   }
 
+  async function hasSecret(key: string): Promise<boolean> {
+    if (await secretsStore.has(key)) return true;
+    return legacySecretsStore ? legacySecretsStore.has(key) : false;
+  }
+
   async function getSummary(): Promise<SettingsSummary> {
     const settings = await loadSettings();
     const [hasGeminiKey, hasYoutubeKey] = await Promise.all([
-      secretsStore.has('geminiKey'),
-      secretsStore.has('youtubeKey'),
+      hasSecret('geminiKey'),
+      hasSecret('youtubeKey'),
     ]);
     return {
       model: settings.model,
@@ -140,7 +197,9 @@ export function createSettingsStoreWebWrapper(options: {
 
   async function getSecret(provider: 'gemini' | 'youtube'): Promise<string> {
     const key = provider === 'gemini' ? 'geminiKey' : 'youtubeKey';
-    return (await secretsStore.get(key)) ?? '';
+    const secret = await secretsStore.get(key);
+    if (secret !== null || !legacySecretsStore) return secret ?? '';
+    return (await legacySecretsStore.get(key)) ?? '';
   }
 
   async function save(patch: SettingsPatch): Promise<SettingsSummary> {
@@ -196,11 +255,35 @@ export function createSettingsStoreWebWrapper(options: {
       throw new Error('Invalid provider');
     }
     await secretsStore.remove(`${provider}Key`);
+    if (legacySecretsStore) {
+      await legacySecretsStore.remove(`${provider}Key`);
+    }
     return getSummary();
   }
 
   async function setMasterPassword(password: string): Promise<void> {
+    await unlock(password);
+  }
+
+  async function unlock(password: string): Promise<void> {
     await secretsStore.unlock(password);
+    try {
+      if (legacySecretsStore) {
+        await legacySecretsStore.unlock(password);
+      }
+    } catch (error) {
+      secretsStore.lock();
+      throw error;
+    }
+  }
+
+  function lock(): void {
+    secretsStore.lock();
+    legacySecretsStore?.lock();
+  }
+
+  function isLocked(): boolean {
+    return secretsStore.isLocked() || legacySecretsStore?.isLocked() === true;
   }
 
   return {
@@ -209,9 +292,9 @@ export function createSettingsStoreWebWrapper(options: {
     save,
     clearSecret,
     setMasterPassword,
-    unlock: (password: string) => secretsStore.unlock(password),
-    lock: () => secretsStore.lock(),
-    isLocked: () => secretsStore.isLocked(),
+    unlock,
+    lock,
+    isLocked,
     isEncryptionAvailable: () => secretsStore.isEncryptionAvailable(),
     migrateFromElectron: (electronData: unknown) => secretsStore.migrateFromElectron(electronData),
   };

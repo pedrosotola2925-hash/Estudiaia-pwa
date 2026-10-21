@@ -9,6 +9,8 @@ import { getSettingsBridge, resetSettingsBridge } from '@services/settings-bridg
 const MASTER_PASSWORD = 'CorrectHorseBatteryStaple!2026';
 const WRONG_PASSWORD = 'WrongHorseBatteryStaple!2026';
 const EXAMPLE_SECRET = 'example-secret-value-123!';
+const ORIGINAL_SECRET = 'original-secret-value-123!';
+const REPLACEMENT_SECRET = 'replacement-secret-value-456!';
 
 interface EncryptedRecord {
   iv: Uint8Array;
@@ -20,6 +22,17 @@ interface SecretsTestDatabase extends DBSchema {
   secrets: {
     key: string;
     value: EncryptedRecord;
+  };
+}
+
+interface PlainSettingsTestDatabase extends DBSchema {
+  settings: {
+    key: string;
+    value: {
+      model: string;
+      voice: string;
+      rate: number;
+    };
   };
 }
 
@@ -72,7 +85,10 @@ function createCryptoWithDeferredOperation(operation: 'encrypt' | 'decrypt') {
   };
 }
 
-async function createStoreWithDeferredIndexedDBOperation(method: 'delete' | 'clear') {
+async function createStoreWithDeferredIndexedDBOperation(
+  method: 'put' | 'delete' | 'clear',
+  dbName = nextDatabaseName(`deferred-${method}`),
+) {
   const started = createDeferred<void>();
   const release = createDeferred<void>();
 
@@ -83,14 +99,34 @@ async function createStoreWithDeferredIndexedDBOperation(method: 'delete' | 'cle
       ...actual,
       openDB: async (...args: unknown[]) => {
         const database = await (actual.openDB as (...values: unknown[]) => Promise<IDBPDatabase<SecretsTestDatabase>>)(...args);
+        const deferMutation = (target: object, value: unknown) => (...methodArgs: unknown[]) => {
+          started.resolve();
+          return release.promise.then(() => (value as (...values: unknown[]) => unknown).apply(target, methodArgs));
+        };
+        const proxyStore = (store: object) => new Proxy(store, {
+          get(target, property) {
+            const value = Reflect.get(target, property, target);
+            if (property === method) return deferMutation(target, value);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+        const proxyTransaction = (transaction: object) => new Proxy(transaction, {
+          get(target, property) {
+            const value = Reflect.get(target, property, target);
+            if (property === 'store') return proxyStore(value as object);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
         return new Proxy(database, {
           get(target, property) {
             const value = Reflect.get(target, property, target);
             if (property === method) {
-              return (...methodArgs: unknown[]) => {
-                started.resolve();
-                return release.promise.then(() => (value as (...values: unknown[]) => unknown).apply(target, methodArgs));
-              };
+              return deferMutation(target, value);
+            }
+            if (property === 'transaction') {
+              return (...transactionArgs: unknown[]) => proxyTransaction(
+                (value as (...values: unknown[]) => object).apply(target, transactionArgs),
+              );
             }
             return typeof value === 'function' ? value.bind(target) : value;
           },
@@ -102,12 +138,28 @@ async function createStoreWithDeferredIndexedDBOperation(method: 'delete' | 'cle
   const { createSettingsStoreWeb: createIsolatedSettingsStore } = await import('@services/settings-web');
   return {
     store: createIsolatedSettingsStore({
-      dbName: nextDatabaseName(`deferred-${method}`),
+      dbName,
       storeName: 'secrets',
     }),
+    dbName,
     started,
     release,
   };
+}
+
+async function readEncryptedRecord(dbName: string, key: string): Promise<EncryptedRecord> {
+  const database = await openDB<SecretsTestDatabase>(dbName);
+  const record = await database.get('secrets', key);
+  database.close();
+  if (!record) throw new Error(`Expected encrypted record for ${key}`);
+  return record;
+}
+
+async function seedEncryptedSecret(dbName: string, key: string, value: string): Promise<void> {
+  const seedStore = createSettingsStoreWeb({ dbName, storeName: 'secrets' });
+  await seedStore.unlock(MASTER_PASSWORD);
+  await seedStore.set(key, value);
+  seedStore.lock();
 }
 
 beforeAll(() => {
@@ -300,34 +352,81 @@ describe('encrypted web settings session expiry and invalidation', () => {
     await expect(store.has('youtubeKey')).resolves.toBe(false);
   });
 
-  it('invalidates a remove operation that remains pending in IndexedDB', async () => {
-    const { store, started, release } = await createStoreWithDeferredIndexedDBOperation('delete');
+  it('aborts a pending IndexedDB put when locked and preserves the original ciphertext', async () => {
+    const dbName = nextDatabaseName('put-rollback-on-lock');
+    await seedEncryptedSecret(dbName, 'geminiKey', ORIGINAL_SECRET);
+    const before = await readEncryptedRecord(dbName, 'geminiKey');
+    const { store, started, release } = await createStoreWithDeferredIndexedDBOperation('put', dbName);
     await store.unlock(MASTER_PASSWORD);
-    await store.set('geminiKey', EXAMPLE_SECRET);
+
+    const pendingSet = store.set('geminiKey', REPLACEMENT_SECRET);
+    await started.promise;
+    store.lock();
+    const rejection = expect(pendingSet).rejects.toThrow(/locked/i);
+    release.resolve();
+    await rejection;
+
+    await store.unlock(MASTER_PASSWORD);
+    await expect(store.get('geminiKey')).resolves.toBe(ORIGINAL_SECRET);
+    await expect(readEncryptedRecord(dbName, 'geminiKey')).resolves.toEqual(before);
+  });
+
+  it('aborts a pending IndexedDB delete when locked and preserves the original ciphertext', async () => {
+    const dbName = nextDatabaseName('delete-rollback-on-lock');
+    await seedEncryptedSecret(dbName, 'geminiKey', ORIGINAL_SECRET);
+    const before = await readEncryptedRecord(dbName, 'geminiKey');
+    const { store, started, release } = await createStoreWithDeferredIndexedDBOperation('delete', dbName);
+    await store.unlock(MASTER_PASSWORD);
 
     const pendingRemove = store.remove('geminiKey');
     await started.promise;
     store.lock();
+    const rejection = expect(pendingRemove).rejects.toThrow(/locked/i);
     release.resolve();
+    await rejection;
 
-    await expect(pendingRemove).rejects.toThrow(/locked/i);
+    await store.unlock(MASTER_PASSWORD);
+    await expect(store.get('geminiKey')).resolves.toBe(ORIGINAL_SECRET);
+    await expect(readEncryptedRecord(dbName, 'geminiKey')).resolves.toEqual(before);
   });
 
-  it('invalidates a clear operation that remains pending in IndexedDB', async () => {
-    const { store, started, release } = await createStoreWithDeferredIndexedDBOperation('clear');
+  it('aborts a pending IndexedDB clear when locked and preserves all ciphertext', async () => {
+    const dbName = nextDatabaseName('clear-rollback-on-lock');
+    await seedEncryptedSecret(dbName, 'geminiKey', ORIGINAL_SECRET);
+    await seedEncryptedSecret(dbName, 'youtubeKey', EXAMPLE_SECRET);
+    const beforeGemini = await readEncryptedRecord(dbName, 'geminiKey');
+    const beforeYoutube = await readEncryptedRecord(dbName, 'youtubeKey');
+    const { store, started, release } = await createStoreWithDeferredIndexedDBOperation('clear', dbName);
     await store.unlock(MASTER_PASSWORD);
-    await store.set('geminiKey', EXAMPLE_SECRET);
 
     const pendingClear = store.clear();
     await started.promise;
     store.lock();
+    const rejection = expect(pendingClear).rejects.toThrow(/locked/i);
     release.resolve();
+    await rejection;
 
-    await expect(pendingClear).rejects.toThrow(/locked/i);
+    await store.unlock(MASTER_PASSWORD);
+    await expect(store.get('geminiKey')).resolves.toBe(ORIGINAL_SECRET);
+    await expect(store.get('youtubeKey')).resolves.toBe(EXAMPLE_SECRET);
+    await expect(readEncryptedRecord(dbName, 'geminiKey')).resolves.toEqual(beforeGemini);
+    await expect(readEncryptedRecord(dbName, 'youtubeKey')).resolves.toEqual(beforeYoutube);
   });
 });
 
 describe('web settings wrapper', () => {
+  it('starts with a default summary when neither IndexedDB store exists yet', async () => {
+    const wrapper = createSettingsStoreWebWrapper({
+      dbName: nextDatabaseName('fresh-default-layout'),
+    });
+
+    await expect(wrapper.getSummary()).resolves.toMatchObject({
+      model: 'gemini-3.5-flash-lite',
+      hasGeminiKey: false,
+      hasYoutubeKey: false,
+    });
+  });
+
   it('saves non-secret settings while the encrypted store remains locked', async () => {
     const dbName = nextDatabaseName('non-secret-while-locked');
     const wrapper = createSettingsStoreWebWrapper({ dbName });
@@ -388,9 +487,55 @@ describe('web settings wrapper', () => {
     legacyStore.lock();
 
     const wrapper = createSettingsStoreWebWrapper({ dbName });
+    await expect(wrapper.getSummary()).resolves.toMatchObject({ hasGeminiKey: true });
     await wrapper.unlock(MASTER_PASSWORD);
 
     await expect(wrapper.getSecret('gemini')).resolves.toBe(EXAMPLE_SECRET);
+  });
+
+  it('reads cccbdb2 plaintext settings and encrypted secrets without changing legacy records', async () => {
+    const dbName = nextDatabaseName('cccbdb2-layout');
+    const legacySettings = {
+      model: 'gemini-2.0-flash',
+      voice: 'es-CL-CatalinaNeural',
+      rate: 12,
+    };
+    const configDatabase = await openDB<PlainSettingsTestDatabase>(dbName, 1, {
+      upgrade(database) {
+        database.createObjectStore('settings');
+      },
+    });
+    await configDatabase.put('settings', legacySettings, 'config');
+    configDatabase.close();
+
+    const legacySecrets = createSettingsStoreWeb({
+      dbName: `${dbName}-secrets`,
+      storeName: 'secrets',
+    });
+    await legacySecrets.unlock(MASTER_PASSWORD);
+    await legacySecrets.set('geminiKey', EXAMPLE_SECRET);
+    legacySecrets.lock();
+    const legacyCiphertext = await readEncryptedRecord(`${dbName}-secrets`, 'geminiKey');
+
+    const wrapper = createSettingsStoreWebWrapper({ dbName });
+    await expect(wrapper.getSummary()).resolves.toEqual({
+      ...legacySettings,
+      hasGeminiKey: true,
+      hasYoutubeKey: false,
+    });
+
+    await wrapper.unlock(MASTER_PASSWORD);
+    await expect(wrapper.getSecret('gemini')).resolves.toBe(EXAMPLE_SECRET);
+    await expect(wrapper.getSummary()).resolves.toEqual({
+      ...legacySettings,
+      hasGeminiKey: true,
+      hasYoutubeKey: false,
+    });
+
+    const preservedConfigDatabase = await openDB<PlainSettingsTestDatabase>(dbName);
+    await expect(preservedConfigDatabase.get('settings', 'config')).resolves.toEqual(legacySettings);
+    preservedConfigDatabase.close();
+    await expect(readEncryptedRecord(`${dbName}-secrets`, 'geminiKey')).resolves.toEqual(legacyCiphertext);
   });
 });
 
