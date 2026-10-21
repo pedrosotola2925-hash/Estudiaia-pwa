@@ -43,6 +43,7 @@ export default defineConfig({
   },
   plugins: [
     VitePWA({
+      injectRegister: false,
       base: '/',
       includeAssets: ['favicon.ico', 'robots.txt'],
       manifest: {

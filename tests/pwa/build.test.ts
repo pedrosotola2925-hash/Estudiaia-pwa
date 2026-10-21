@@ -21,6 +21,8 @@ describe('PWA build', () => {
     expect(indexHtml).toContain('manifest.json');
     expect(indexHtml).toContain('theme-color');
     expect(indexHtml).toContain('apple-mobile-web-app-capable');
+    expect(indexHtml).not.toContain('vite-plugin-pwa:register-sw');
+    expect(indexHtml).not.toContain('/registerSW.js');
     
     // Check manifest.json has required fields
     const manifest = JSON.parse(readFileSync('dist-pwa/manifest.json', 'utf-8'));

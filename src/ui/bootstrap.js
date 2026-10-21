@@ -59,6 +59,32 @@
 
   const desktopBridgePromise = initDesktopBridge();
 
+  async function initPwaServiceWorker() {
+    if (!E.context || typeof navigator === 'undefined' || !navigator.serviceWorker) return;
+
+    const [{ registerServiceWorker }, { createOfflineBanner }, { Workbox }] = await Promise.all([
+      import('@services/sw-registration'),
+      import('@ui/offline-banner.js'),
+      import('workbox-window'),
+    ]);
+    const banner = createOfflineBanner(document);
+    await registerServiceWorker({
+      navigatorRef: navigator,
+      windowRef: window,
+      createWorkbox: url => new Workbox(url),
+      onOffline: () => banner.show(),
+      onOnline: () => banner.hide(),
+      onUpdateReady: applyUpdate => {
+        const message = E.ui.message(
+          document.getElementById('app-message'),
+          'Nueva versión disponible.',
+          'info',
+        );
+        message.append(document.createTextNode(' '), E.ui.button('Actualizar', applyUpdate));
+      },
+    });
+  }
+
   async function init() {
     await desktopBridgePromise;
     try {
@@ -92,6 +118,7 @@
       E.router.go('inicio');
       if (E.store.warning) E.ui.toast(E.store.warning, 'error');
       E.ready = true;
+      void initPwaServiceWorker().catch(() => {});
     } catch {
       document.getElementById('app-message').textContent = 'No se pudo iniciar la interfaz. Cierra y vuelve a abrir la aplicación.';
     }
