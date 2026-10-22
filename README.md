@@ -46,3 +46,48 @@ No hay promesas de gratuidad ilimitada, tamaño ni firma digital. Los servicios 
 ## Soporte
 
 Si algo falla, revisa **Ajustes** y prueba nuevamente con una clave válida y conexión a internet.
+
+## Versión Web (PWA)
+
+EstudiaIA 2 también está disponible como **Progressive Web App** que funciona en cualquier navegador moderno (Chrome, Edge, Firefox, Safari) y se puede instalar en el dispositivo como una app nativa.
+
+### Construir la PWA
+
+```bash
+npm run build:pwa
+# Resultado en dist-pwa/
+```
+
+### Despliegue rápido
+
+| Plataforma | Comando |
+|------------|---------|
+| **Netlify** | Arrastrar carpeta `dist-pwa/` a https://app.netlify.com/drop |
+| **Vercel** | `npx vercel deploy dist-pwa --prod` |
+| **Firebase** | `firebase deploy --only hosting` (configurar `public: dist-pwa`) |
+| **GitHub Pages** | Subir `dist-pwa/` a rama `gh-pages` |
+| **nginx/Caddy** | Servir `dist-pwa/` con HTTPS + headers SW |
+
+> **Requisito obligatorio**: HTTPS válido (certificado TLS). En `localhost` funciona con HTTP plano.
+
+### Documentación completa
+
+Ver [`docs/PWA_DEPLOYMENT.md`](docs/PWA_DEPLOYMENT.md) para guía detallada de despliegue, configuración de headers, Edge-TTS opcional y testing en ChromeOS/móvil.
+
+### Desarrollo PWA local
+
+```bash
+npm run dev:pwa
+# Abre https://localhost:5173 (certificado auto-firmado, aceptar en navegador)
+```
+
+### Testing en dispositivo móvil/ChromeOS
+
+```bash
+# Terminal 1: Vite dev server
+npm run dev:pwa
+
+# Terminal 2: túnel público
+ngrok http 5173
+# Usar la URL https://xxxx.ngrok-free.app en el dispositivo
+```
