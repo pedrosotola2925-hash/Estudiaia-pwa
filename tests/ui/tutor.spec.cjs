@@ -38,6 +38,7 @@ test('tutor sends the selected course and presents response controls', async () 
     await page.locator('#searchInput').fill('fracciones');
     await page.locator('#searchBtn').click();
     await expect(page.locator('#respuestas')).toContainText('Respuesta para fracciones en 7º básico.');
+    await expect(page.locator('#debug-log')).toHaveCount(0);
     await expect(page.locator('#btn-entendi')).toBeVisible();
     await expect(page.locator('#btn-otra')).toBeVisible();
 

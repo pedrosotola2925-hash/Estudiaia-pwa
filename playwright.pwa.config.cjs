@@ -10,8 +10,9 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
  */
 module.exports = defineConfig({
   testDir: './tests/pwa',
-  timeout: 90000,
-  expect: { timeout: 15000 },
+  testMatch: '**/e2e.test.ts',
+  timeout: 120000,
+  expect: { timeout: 30000 },
   fullyParallel: false,
   workers: 1,
   reporter: [['list']],

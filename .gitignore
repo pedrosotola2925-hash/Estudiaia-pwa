@@ -10,3 +10,11 @@ __pycache__/
 *.pyc
 .env
 .env.*
+
+# PWA build output and local-only artifacts
+dist-pwa/
+certs/
+*.log
+lighthouse-report.json
+debug_units.cjs
+nul

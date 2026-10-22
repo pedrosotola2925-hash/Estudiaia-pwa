@@ -421,9 +421,20 @@ describe('web settings wrapper', () => {
     });
 
     await expect(wrapper.getSummary()).resolves.toMatchObject({
-      model: 'gemini-3.5-flash-lite',
+      model: 'gemini-3.8-flash',
       hasGeminiKey: false,
       hasYoutubeKey: false,
+    });
+  });
+
+  it('migrates the former default Gemini model after a reload', async () => {
+    const dbName = nextDatabaseName('migrate-former-default-model');
+    const wrapper = createSettingsStoreWebWrapper({ dbName });
+    await wrapper.save({ model: 'gemini-3.5-flash-lite' });
+
+    const reloaded = createSettingsStoreWebWrapper({ dbName });
+    await expect(reloaded.getSummary()).resolves.toMatchObject({
+      model: 'gemini-3.8-flash',
     });
   });
 

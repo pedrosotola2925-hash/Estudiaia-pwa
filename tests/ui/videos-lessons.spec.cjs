@@ -39,11 +39,11 @@ async function installVideoMocks(app, { delayedSearch = false, lesson = validLes
   }, { delayedSearch, lesson, videos, searchError });
 }
 
-async function selectMathAndUnit(page) {
+async function selectMathAndUnit(page, { unit = 'Álgebra' } = {}) {
   await expect(page.locator('#sel-materia-v option')).toHaveCount(7);
   await page.locator('#sel-materia-v').selectOption('matematica');
-  await expect(page.locator('#sel-unidad-v option[value="Álgebra"]')).toHaveCount(1);
-  await page.locator('#sel-unidad-v').selectOption({ label: 'Álgebra' });
+  await expect(page.locator(`#sel-unidad-v option[value="${unit}"]`)).toHaveCount(1);
+  await page.locator('#sel-unidad-v').selectOption({ label: unit });
 }
 
 test('video view fills subjects and units, renders untrusted metadata safely, and offers external playback', async () => {
@@ -96,7 +96,7 @@ test('video cache is separated by course and does not search again after returni
     await expect.poll(() => app.evaluate(() => globalThis.__videoSearchCalls.length)).toBe(1);
 
     await page.locator('#sel-curso').selectOption('8º básico');
-    await selectMathAndUnit(page);
+    await selectMathAndUnit(page, { unit: 'Funciones cuadráticas' });
     await page.locator('#btn-buscar-videos').click();
     await expect.poll(() => app.evaluate(() => globalThis.__videoSearchCalls.length)).toBe(2);
 

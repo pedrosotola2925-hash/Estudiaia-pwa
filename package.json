@@ -29,6 +29,7 @@
     "@types/node": "^22.7.4",
     "electron": "44.9.0",
     "electron-builder": "26.15.3",
+    "fake-indexeddb": "^6.2.6",
     "idb": "^8.0.0",
     "sharp": "^0.35.5",
     "vite": "^6.0.0",

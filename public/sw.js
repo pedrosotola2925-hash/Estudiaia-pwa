@@ -2,7 +2,7 @@
 
 import { precacheAndRoute } from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
-import { StaleWhileRevalidate, NetworkFirst } from 'workbox-strategies';
+import { StaleWhileRevalidate } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 
@@ -16,8 +16,21 @@ self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
+function removeLegacyGeminiMetadata() {
+  // The old ExpirationPlugin stored full request URLs (including API keys)
+  // in Workbox's IndexedDB. Thumbnails can safely rebuild their metadata.
+  return new Promise(resolve => {
+    const request = self.indexedDB.deleteDatabase('workbox-expiration');
+    request.onsuccess = request.onerror = request.onblocked = () => resolve();
+  });
+}
+
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(Promise.all([
+    self.clients.claim(),
+    self.caches.delete('gemini-api'),
+    removeLegacyGeminiMetadata(),
+  ]));
 });
 
 registerRoute(
@@ -28,23 +41,6 @@ registerRoute(
       new ExpirationPlugin({
         maxEntries: 100,
         maxAgeSeconds: 60 * 60 * 24 * 30,
-      }),
-      new CacheableResponsePlugin({
-        statuses: [0, 200],
-      }),
-    ],
-  })
-);
-
-registerRoute(
-  ({ url }) => url.hostname === 'generativelanguage.googleapis.com',
-  new NetworkFirst({
-    cacheName: 'gemini-api',
-    networkTimeoutSeconds: 10,
-    plugins: [
-      new ExpirationPlugin({
-        maxEntries: 50,
-        maxAgeSeconds: 60 * 60 * 24 * 7,
       }),
       new CacheableResponsePlugin({
         statuses: [0, 200],

@@ -28,6 +28,7 @@ async function startPwa(): Promise<void> {
   await import('@ui/settings-pwa.js');
   await import('@ui/tutor.js');
   await import('@ui/materias.js');
+  await import('@ui/leccion.js');
   await import('@ui/practicas.js');
   await import('@ui/progreso.js');
   await import('@ui/videos.js');

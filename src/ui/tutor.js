@@ -76,6 +76,7 @@
       activeId = requestId;
 
       const topic = kind === 'notes' ? `Apunte de ${attachedFile?.name || course}` : text;
+      E.lastTutorQuery = text;
       try {
         const result = await E.request.run({
           id: requestId,
@@ -100,9 +101,11 @@
     },
 
     show(text, { source, topic }) {
-      E.voice.setText(text);
+      E.voice.play(text);
       const res = document.getElementById('respuestas');
       res.hidden = false;
+      const vb = document.getElementById('voice-select-container') || document.querySelector('.voicebar');
+      if (vb) vb.hidden = false;
       res.replaceChildren(E.ui.renderMarkdown(text));
 
       const mini = E.Core.parseMiniQuestion(text);
@@ -110,17 +113,27 @@
         const box = E.ui.el('div', '', { style: 'margin-top:14px;padding:14px;background:#eef2ff;border-radius:14px;' });
         box.append(E.ui.el('strong', '🧠 ' + mini.enunciado));
         const opts = E.ui.el('div', null, 'fila');
+        let feedback = null;
         for (const o of mini.opciones) {
           const b = E.ui.button(o.letra + ') ' + o.texto, () => {
             if (b.disabled) return;
-            const parent = b.closest('div');
-            parent.querySelectorAll('button').forEach(x => { x.disabled = true; });
+            opts.querySelectorAll('button').forEach(x => { x.disabled = true; });
             if (o.letra === mini.correcta) {
               b.classList.add('correct');
-              E.ui.toast('¡Correcto! 🎉', 'success');
+              if (feedback) feedback.textContent = '¡Correcto! 🎉';
+              else {
+                feedback = E.ui.el('div', '¡Correcto! 🎉', 'message success');
+                feedback.setAttribute('role', 'status');
+                box.append(feedback);
+              }
             } else {
               b.classList.add('wrong');
-              E.ui.toast('Casi 💪 La correcta era ' + mini.correcta + '.', 'error');
+              if (feedback) feedback.textContent = 'Casi 💪 La correcta era ' + mini.correcta + '.';
+              else {
+                feedback = E.ui.el('div', 'Casi 💪 La correcta era ' + mini.correcta + '.', 'message error');
+                feedback.setAttribute('role', 'alert');
+                box.append(feedback);
+              }
             }
           }, 'btn option');
           b.disabled = false;

@@ -18,6 +18,12 @@
     }
   }
 
+  function getCourseLevel(course) {
+    if (course.includes('básico')) return 'educación básica';
+    if (course.includes('medio') || course.includes('I ') || course.includes('II ') || course.includes('III ') || course.includes('IV ')) return 'educación media';
+    return 'escolar';
+  }
+
   function normalizeVideos(value) {
     if (!Array.isArray(value)) throw E.Core.invalid('La búsqueda de vídeos devolvió un formato no válido.');
     return value.flatMap(video => {
@@ -69,6 +75,7 @@
     subject.replaceChildren(new Option('Selecciona una materia', ''));
     for (const item of E.data.subjects) subject.append(new Option(`${item.emoji} ${item.nombre}`, item.id));
     subject.value = state.subjectId;
+    subject.addEventListener('change', E.ui.guard(() => this.changeSubject()));
   }
 
   function populateUnits(units = []) {
@@ -114,6 +121,12 @@
       const course = E.course();
       if (state.course !== course) resetForCourse(course);
       populateSubjects();
+      // Si hay una pregunta del tutor activa y no hay materia seleccionada,
+      // buscar automáticamente por la pregunta del tutor.
+      if (E.lastTutorQuery && !state.subjectId) {
+        await this.searchByTutorQuery();
+        return;
+      }
       if (!state.subjectId) {
         populateUnits();
         return;
@@ -174,8 +187,10 @@
     async search() {
       const { course, subject, unit } = this.selected();
       const key = currentKey(course, subject.id, unit);
+      const tutorQuery = E.lastTutorQuery || '';
       state.lesson = null;
-      if (resultsByKey.has(key)) {
+      // Si hay una pregunta del tutor activa, no usar caché: buscar vídeos para esa pregunta.
+      if (resultsByKey.has(key) && !tutorQuery) {
         state.key = key;
         state.results = resultsByKey.get(key);
         setStatus('Mostrando resultados guardados.');
@@ -189,16 +204,87 @@
       setStatus('Buscando vídeos seguros…');
       document.getElementById('zona-videos').replaceChildren();
       try {
-        const response = await E.request.run({
-          id: requestId,
-          query: `${subject.nombre} ${unit} ${course} Chile`
+        // Búsqueda 1: Por materia/unidad (clásico) - con nivel educativo
+        const courseLevel = getCourseLevel(course);
+        const unitQuery = `${subject.nombre} ${unit} ${courseLevel} Chile`;
+        const unitResponse = await E.request.run({
+          id: requestId + '-unit',
+          query: unitQuery
         }, 'searchVideos');
         if (token !== viewToken || E.course() !== course || state.subjectId !== subject.id || state.unit !== unit) return;
-        const results = normalizeVideos(response);
+        const unitResults = normalizeVideos(unitResponse);
+
+        // Búsqueda 2: Por pregunta del tutor (si hay pregunta activa)
+        let tutorResults = [];
+        if (tutorQuery) {
+          const tutorQueryRefined = `${tutorQuery} nivel ${courseLevel} Chile explicación`;
+          const tutorResponse = await E.request.run({
+            id: requestId + '-tutor',
+            query: tutorQueryRefined
+          }, 'searchVideos');
+          if (token !== viewToken || E.course() !== course || state.subjectId !== subject.id || state.unit !== unit) return;
+          tutorResults = normalizeVideos(tutorResponse);
+        }
+
+        // Combinar resultados (unidad primero, luego tutor, sin duplicados)
+        const seen = new Set();
+        const combined = [];
+        for (const v of [...unitResults, ...tutorResults]) {
+          if (!seen.has(v.id)) {
+            seen.add(v.id);
+            combined.push(v);
+          }
+        }
+
         state.key = key;
+        state.results = combined;
+        resultsByKey.set(key, combined);
+
+        let statusMsg = '';
+        if (unitResults.length) statusMsg += `${unitResults.length} vídeo${unitResults.length === 1 ? '' : 's'} por unidad`;
+        if (tutorResults.length) {
+          if (statusMsg) statusMsg += '; ';
+          statusMsg += `${tutorResults.length} vídeo${tutorResults.length === 1 ? '' : 's'} por tu pregunta`;
+        }
+        if (!statusMsg) statusMsg = 'No hay resultados para esa búsqueda.';
+        setStatus(statusMsg);
+        renderResults(combined);
+      } catch (error) {
+        if (error.code !== 'CANCELLED' && token === viewToken) {
+          setStatus(error.message || 'No se pudieron buscar vídeos.', 'error');
+          document.getElementById('zona-videos').replaceChildren();
+        }
+      } finally {
+        if (activeSearchId === requestId) activeSearchId = null;
+      }
+    },
+
+    async searchByTutorQuery() {
+      const course = E.course();
+      const tutorQuery = E.lastTutorQuery || '';
+      if (!tutorQuery) return;
+
+      if (activeSearchId) E.request.cancel(activeSearchId);
+      const requestId = crypto.randomUUID();
+      const token = ++viewToken;
+      activeSearchId = requestId;
+      setStatus('Buscando vídeos para tu pregunta…');
+      document.getElementById('zona-videos').replaceChildren();
+
+      try {
+        // Construir query más precisa: pregunta + nivel educativo + contexto chileno
+        const courseLevel = getCourseLevel(course);
+        const query = `${tutorQuery} nivel ${courseLevel} Chile explicación`;
+        const response = await E.request.run({
+          id: requestId,
+          query
+        }, 'searchVideos');
+        if (token !== viewToken || E.course() !== course) return;
+        const results = normalizeVideos(response);
         state.results = results;
-        resultsByKey.set(key, results);
-        setStatus(results.length ? `${results.length} vídeo${results.length === 1 ? '' : 's'} encontrado${results.length === 1 ? '' : 's'}.` : 'No hay resultados para esa búsqueda.');
+        state.key = `tutor:${course}:${tutorQuery}`;
+        resultsByKey.set(state.key, results);
+        setStatus(results.length ? `${results.length} vídeo${results.length === 1 ? '' : 's'} por tu pregunta` : 'No hay resultados para tu pregunta.');
         renderResults(results);
       } catch (error) {
         if (error.code !== 'CANCELLED' && token === viewToken) {

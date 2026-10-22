@@ -46,6 +46,7 @@ test.describe('PWA e2e', () => {
 
     // After the reload, verify the SW is active and controlling
     await page.waitForLoadState('load');
+    await waitUntilAppReady(page);
     const registration = await page.evaluate(async () => {
       const reg = await navigator.serviceWorker.getRegistration();
       return reg ? { scope: reg.scope, active: !!reg.active, controlling: !!navigator.serviceWorker.controller } : null;
@@ -56,6 +57,13 @@ test.describe('PWA e2e', () => {
 
   test('settings persist across reload and stay encrypted at rest', async ({ page }) => {
     await page.goto('/');
+    await waitUntilAppReady(page);
+    await page.waitForFunction(
+      () => Boolean(navigator.serviceWorker.controller),
+      undefined,
+      { timeout: 30000 },
+    );
+    await page.waitForLoadState('load');
     await waitUntilAppReady(page);
 
     // Unlock and save settings via the settings bridge directly to avoid UI flakiness
@@ -76,7 +84,7 @@ test.describe('PWA e2e', () => {
       await settings.unlock(password);
       return await settings.getSettings();
     }, MASTER_PASSWORD).then((result) => {
-      expect(result.model).toBe('gemini-3.5-flash-lite');
+      expect(result.model).toBe('gemini-3.8-flash');
       expect(result.hasGeminiKey).toBe(true);
     });
 
@@ -114,6 +122,13 @@ test.describe('PWA e2e', () => {
   });
 
   test('voice plays through the Web Speech API', async ({ page }) => {
+    // speechSynthesis may not be available in headless Chrome; skip if so
+    const hasSpeechSynthesis = await page.evaluate(() => 'speechSynthesis' in window);
+    if (!hasSpeechSynthesis) {
+      test.skip();
+      return;
+    }
+
     await page.addInitScript(() => {
       const synthesis = window.speechSynthesis;
       const original = synthesis.speak.bind(synthesis);
@@ -125,6 +140,14 @@ test.describe('PWA e2e', () => {
     });
 
     await page.goto('/');
+    await waitUntilAppReady(page);
+    await page.waitForFunction(
+      () => Boolean(navigator.serviceWorker.controller),
+      undefined,
+      { timeout: 30000 },
+    );
+    await page.waitForLoadState('load');
+    await waitUntilAppReady(page);
     await expect(page.locator('#voice-preview')).toBeVisible();
     await page.locator('#voice-preview').click();
 

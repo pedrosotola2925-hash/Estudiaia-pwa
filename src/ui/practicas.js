@@ -40,7 +40,7 @@
       const btnCrear = document.getElementById('btn-crear-practica');
 
       selMateria.replaceChildren(new Option('', ''), ...E.Core.SUBJECTS.map(s => new Option(s.nombre, s.id)));
-      selMateria.onchange = async () => {
+      selMateria.addEventListener('change', async () => {
         selUnidad.replaceChildren(new Option('', ''));
         const subjectId = selMateria.value;
         if (!subjectId) return;
@@ -50,7 +50,7 @@
         } catch (e) {
           E.ui.toast(e.message, 'error');
         }
-      };
+      });
 
       btnCrear.onclick = () => {
         if (generating) return;

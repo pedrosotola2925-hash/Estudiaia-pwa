@@ -14,6 +14,9 @@ describe('PWA build', () => {
     expect(existsSync('dist-pwa/index.html')).toBe(true);
     expect(existsSync('dist-pwa/manifest.json')).toBe(true);
     expect(existsSync('dist-pwa/sw.js')).toBe(true);
+    // A deployed worker must be revalidated instead of cached as a static asset.
+    const hostingHeaders = readFileSync('dist-pwa/_headers', 'utf-8');
+    expect(hostingHeaders).toMatch(/\/sw\.js\s+Cache-Control: no-cache/);
     
     // Check index.html has manifest link and PWA meta tags
     const indexHtml = readFileSync('dist-pwa/index.html', 'utf-8');
@@ -24,6 +27,10 @@ describe('PWA build', () => {
     expect(indexHtml).toContain('id="install-btn"');
     expect(indexHtml).not.toContain('vite-plugin-pwa:register-sw');
     expect(indexHtml).not.toContain('/registerSW.js');
+    // A clean checkout must bundle the tracked stylesheet, not depend on an
+    // untracked duplicate under public/.
+    expect(indexHtml).toMatch(/href="\/assets\/[^" ]+\.css"/);
+    expect(indexHtml).not.toContain('href="/styles.css"');
     
     // Check manifest.json has required fields
     const manifest = JSON.parse(readFileSync('dist-pwa/manifest.json', 'utf-8'));
@@ -46,9 +53,12 @@ describe('PWA build', () => {
     expect(swContent).toMatch(/"url":/);
     // Check for runtime caching - cache names and hostnames (preserved in minified output)
     expect(swContent).toContain('youtube-thumbnails');
-    expect(swContent).toContain('gemini-api');
     expect(swContent).toContain('i.ytimg.com');
-    expect(swContent).toContain('generativelanguage.googleapis.com');
+    // Authenticated Gemini GET URLs contain the user's API key. Never cache them,
+    // and remove any sensitive entries left by previous Service Worker versions.
+    expect(swContent).not.toContain('generativelanguage.googleapis.com');
+    expect(swContent).toMatch(/caches\.delete\(["']gemini-api["']\)/);
+    expect(swContent).toMatch(/indexedDB\.deleteDatabase\(["']workbox-expiration["']\)/);
     expect(swContent).toContain('navigationPreload');
     expect(swContent).toContain('skipWaiting');
     expect(swContent).toContain('clients.claim');
@@ -56,5 +66,7 @@ describe('PWA build', () => {
     // Check that UI modules are bundled (at least some JS files exist)
     const jsFiles = readdirSync('dist-pwa').filter(f => f.endsWith('.js'));
     expect(jsFiles.length).toBeGreaterThan(0);
-  });
+    // The Materias unit button navigates to leccion: its renderer must ship.
+    expect(readdirSync('dist-pwa/assets').some(f => /^leccion-[^/]+\.js$/.test(f))).toBe(true);
+  }, 30_000);
 });

@@ -67,6 +67,7 @@ describe('providers-web', () => {
       const url = new URL(input);
       expect(url.searchParams.get('key')).toBe('gemini-test-key');
       expect(url.pathname).toContain('generateContent');
+      expect(url.pathname).toContain('/models/gemini-3.8-flash:generateContent');
       return jsonResponse({
         candidates: [{ content: { parts: [{ text: 'Las fracciones son partes de un todo.' }] } }],
       });

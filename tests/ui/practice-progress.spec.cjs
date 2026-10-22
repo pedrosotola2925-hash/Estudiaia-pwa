@@ -25,12 +25,12 @@ async function installPracticeMock(app, { questions = practice, delay = false } 
   }, { questions, delay });
 }
 
-async function selectMathAndUnit(page) {
+async function selectMathAndUnit(page, { unit = 'Álgebra' } = {}) {
   await page.locator('[data-vista="practicas"]').click();
   await expect(page.locator('#sel-materia option')).toHaveCount(7);
   await page.locator('#sel-materia').selectOption('matematica');
-  await expect(page.locator('#sel-unidad option[value="Álgebra"]')).toHaveCount(1);
-  await page.locator('#sel-unidad').selectOption({ label: 'Álgebra' });
+  await expect(page.locator(`#sel-unidad option[value="${unit}"]`)).toHaveCount(1);
+  await page.locator('#sel-unidad').selectOption({ label: unit });
 }
 
 async function answerPractice(page, { firstDoubleClick = false } = {}) {
@@ -121,7 +121,7 @@ test('progress is course-scoped, keeps twenty history entries, and does not repo
     await expect(page.locator('#practice-total')).toHaveText('0');
 
     await installPracticeMock(app);
-    await selectMathAndUnit(page);
+    await selectMathAndUnit(page, { unit: 'Funciones cuadráticas' });
     await page.evaluate(() => {
       const original = window.Estudia.store.recordPractice.bind(window.Estudia.store);
       window.Estudia.store.recordPractice = value => {

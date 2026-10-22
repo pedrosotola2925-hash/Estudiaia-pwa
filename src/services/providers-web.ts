@@ -17,7 +17,7 @@
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const YOUTUBE_BASE = 'https://www.googleapis.com/youtube/v3';
 const REQUEST_TIMEOUT_MS = 30_000;
-const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 
 interface ProviderSettingsStore {
   get(key: string): Promise<string | null>;

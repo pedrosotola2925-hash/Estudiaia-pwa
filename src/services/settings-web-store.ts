@@ -2,6 +2,8 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import { createSettingsStoreWeb } from './settings-web.ts';
 
 const VOICES = ['es-MX-DaliaNeural', 'es-CL-CatalinaNeural'] as const;
+const LEGACY_DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 
 interface SettingsSummary {
   model: string;
@@ -46,7 +48,7 @@ interface PlainSettingsDBSchema extends DBSchema {
 }
 
 const DEFAULT_SETTINGS: PlainSettings = {
-  model: 'gemini-3.5-flash-lite',
+  model: DEFAULT_GEMINI_MODEL,
   voice: VOICES[0],
   rate: -5,
 };
@@ -98,6 +100,11 @@ export function createSettingsStoreWebWrapper(options: {
   let settingsDatabase: IDBPDatabase<PlainSettingsDBSchema> | null = null;
   let settingsDatabasePromise: Promise<IDBPDatabase<PlainSettingsDBSchema>> | null = null;
 
+  function migrateFormerDefaultModel(settings: PlainSettings): PlainSettings {
+    if (settings.model !== LEGACY_DEFAULT_GEMINI_MODEL) return settings;
+    return { ...settings, model: DEFAULT_GEMINI_MODEL };
+  }
+
   async function getSettingsDB() {
     if (settingsDatabase) return settingsDatabase;
     if (!settingsDatabasePromise) {
@@ -145,13 +152,21 @@ export function createSettingsStoreWebWrapper(options: {
     const database = await getSettingsDB();
     const stored = await database.get(settingsStoreName, 'config');
     if (stored) {
-      settingsCache = stored;
-      return stored;
+      const migrated = migrateFormerDefaultModel(stored);
+      if (migrated !== stored) {
+        await database.put(settingsStoreName, migrated, 'config');
+      }
+      settingsCache = migrated;
+      return migrated;
     }
     const legacySettings = await loadLegacySettings();
     if (legacySettings) {
-      settingsCache = legacySettings;
-      return legacySettings;
+      const migrated = migrateFormerDefaultModel(legacySettings);
+      if (migrated !== legacySettings) {
+        await database.put(settingsStoreName, migrated, 'config');
+      }
+      settingsCache = migrated;
+      return migrated;
     }
     settingsCache = { ...DEFAULT_SETTINGS };
     return settingsCache;

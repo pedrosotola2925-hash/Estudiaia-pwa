@@ -13,7 +13,7 @@ const store = {
     // This is a sync getter for compatibility, but actual settings are async
     // Return defaults - the real async loading happens in bootstrap
     return {
-      model: 'gemini-3.5-flash-lite',
+      model: 'gemini-3.8-flash',
       voice: 'es-MX-DaliaNeural',
       rate: -5,
       hasGeminiKey: false,
