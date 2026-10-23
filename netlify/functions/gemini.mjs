@@ -33,6 +33,36 @@ function acceptsJson(contentType) {
   return typeof contentType === 'string' && /^application\/json(?:\s*;|$)/i.test(contentType);
 }
 
+async function readBodyWithinLimit(request) {
+  const contentLength = request.headers?.get('content-length')?.trim();
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_BODY_BYTES) {
+    return null;
+  }
+
+  if (!request.body) return '';
+
+  const reader = request.body.getReader();
+  const chunks = [];
+  let receivedBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      receivedBytes += value.byteLength;
+      if (receivedBytes > MAX_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return Buffer.concat(chunks, receivedBytes).toString('utf8');
+}
+
 function responseText(data) {
   const parts = data?.candidates?.[0]?.content?.parts;
   if (!Array.isArray(parts)) return '';
@@ -66,8 +96,8 @@ export default async function handler(request) {
   let validatedRequest;
   let prompt;
   try {
-    const rawBody = await request.text();
-    if (Buffer.byteLength(rawBody, 'utf8') > MAX_BODY_BYTES) {
+    const rawBody = await readBodyWithinLimit(request);
+    if (rawBody === null) {
       return errorResponse(400, 'INVALID_FORMAT');
     }
     const body = JSON.parse(rawBody);

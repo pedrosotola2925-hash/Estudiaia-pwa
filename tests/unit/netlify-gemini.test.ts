@@ -107,6 +107,37 @@ describe('Netlify Gemini function', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('detiene un cuerpo en streaming al superar 6 MiB sin solicitar un octavo chunk', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    let pulls = 0;
+    const oneMiBChunk = new Uint8Array(1024 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls <= 7) {
+          controller.enqueue(oneMiBChunk);
+          return;
+        }
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const request = new Request(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      duplex: 'half',
+    } as RequestInit);
+
+    const response = await handler(request);
+
+    expect(response.status).toBe(400);
+    expectJsonNoStore(response);
+    await expect(readError(response)).resolves.toMatchObject({ code: 'INVALID_FORMAT' });
+    expect(pulls).toBeLessThanOrEqual(7);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('rechaza notas sobre el máximo o con firma/MIME inválidos sin llamar al proveedor', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
