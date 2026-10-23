@@ -1,8 +1,10 @@
+import { Buffer } from 'node:buffer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import handler from '../../netlify/functions/youtube.mjs';
 
 const ENDPOINT = 'https://site/.netlify/functions/youtube';
 const TEST_ONLY_KEY = 'test-only-youtube-key';
+const MAX_BODY_BYTES = 6 * 1024 * 1024;
 
 type ErrorEnvelope = { error: { code: string; message: string } };
 
@@ -20,6 +22,20 @@ function rawJsonRequest(body: string): Request {
     headers: { 'Content-Type': 'application/json' },
     body,
   });
+}
+
+function oversizedJsonRequest(): Request {
+  const padding = MAX_BODY_BYTES - (MAX_BODY_BYTES % 4096);
+  const inner = JSON.stringify({ query: 'fracciones', padding: 'x'.repeat(padding) });
+  const body = Buffer.from(inner, 'utf8');
+  expect(body.byteLength).toBeGreaterThan(MAX_BODY_BYTES);
+
+  return new Request(ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+    duplex: 'half',
+  } as RequestInit);
 }
 
 function youtubeResponse(items: unknown[]): Response {
@@ -130,6 +146,45 @@ describe('Netlify YouTube function', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('rechaza cuerpos de más de 6 MiB antes de llamar a YouTube', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await handler(oversizedJsonRequest());
+
+    expect(response.status).toBe(400);
+    expectJsonNoStore(response);
+    await expect(readError(response)).resolves.toMatchObject({ code: 'INVALID_FORMAT' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('no consume por completo un cuerpo en streaming que supera 6 MiB', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    let pulls = 0;
+    const chunk = new Uint8Array(1024 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(chunk);
+      },
+    }, { highWaterMark: 0 });
+    const request = new Request(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      duplex: 'half',
+    } as RequestInit);
+
+    const response = await handler(request);
+
+    expect(response.status).toBe(400);
+    expectJsonNoStore(response);
+    await expect(readError(response)).resolves.toMatchObject({ code: 'INVALID_FORMAT' });
+    expect(pulls).toBeLessThanOrEqual(7);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('normaliza solo vídeos embebibles con identificador válido', async () => {
     const upstreamThumbnail = 'https://untrusted.example/thumbnail.jpg';
     const fetchMock = vi.fn(async () => youtubeResponse([
@@ -207,6 +262,34 @@ describe('Netlify YouTube function', () => {
     expectJsonNoStore(response);
     const error = await readError(response);
     expect(error.code).toBe('PROVIDER_ERROR');
+    expect(JSON.stringify(error)).not.toContain(providerDetail);
+    expect(JSON.stringify(error)).not.toContain(TEST_ONLY_KEY);
+  });
+
+  it('aborta la solicitud a YouTube a los 30 segundos y devuelve TIMEOUT seguro', async () => {
+    vi.useFakeTimers();
+    const providerDetail = 'provider timeout detail must not reach the client';
+    let signalSeen!: (signal: AbortSignal) => void;
+    const upstreamSignal = new Promise<AbortSignal>(resolve => {
+      signalSeen = resolve;
+    });
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) throw new Error('El handler debe pasar AbortSignal a fetch.');
+      signalSeen(signal);
+      signal.addEventListener('abort', () => reject(new DOMException(providerDetail, 'AbortError')), { once: true });
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pendingResponse = handler(jsonRequest({ query: 'fracciones' }));
+    await upstreamSignal;
+    await vi.advanceTimersByTimeAsync(30_000);
+    const response = await pendingResponse;
+
+    expect(response.status).toBe(504);
+    expectJsonNoStore(response);
+    const error = await readError(response);
+    expect(error.code).toBe('TIMEOUT');
     expect(JSON.stringify(error)).not.toContain(providerDetail);
     expect(JSON.stringify(error)).not.toContain(TEST_ONLY_KEY);
   });

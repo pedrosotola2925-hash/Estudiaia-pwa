@@ -1,6 +1,10 @@
+import { Buffer } from 'node:buffer';
+
 const YOUTUBE_SEARCH_URL = 'https://www.googleapis.com/youtube/v3/search';
 const DEFAULT_MAX_RESULTS = 4;
 const MAX_QUERY_LENGTH = 1_000;
+const MAX_BODY_BYTES = 6 * 1024 * 1024;
+const UPSTREAM_TIMEOUT_MS = 30_000;
 const JSON_HEADERS = Object.freeze({
   'Content-Type': 'application/json; charset=utf-8',
   'Cache-Control': 'no-store',
@@ -10,6 +14,7 @@ const ERROR_MESSAGES = Object.freeze({
   INVALID_FORMAT: 'La solicitud no tiene un formato válido.',
   QUOTA: 'El servicio está ocupado. Inténtalo más tarde.',
   PROVIDER_ERROR: 'El proveedor no pudo completar la solicitud.',
+  TIMEOUT: 'El proveedor tardó demasiado en responder.',
 });
 
 function jsonResponse(status, body) {
@@ -22,6 +27,36 @@ function errorResponse(status, code) {
 
 function acceptsJson(contentType) {
   return typeof contentType === 'string' && /^application\/json(?:\s*;|$)/i.test(contentType);
+}
+
+async function readBodyWithinLimit(request) {
+  const contentLength = request.headers?.get('content-length')?.trim();
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_BODY_BYTES) {
+    return null;
+  }
+
+  if (!request.body) return '';
+
+  const reader = request.body.getReader();
+  const chunks = [];
+  let receivedBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      receivedBytes += value.byteLength;
+      if (receivedBytes > MAX_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return Buffer.concat(chunks, receivedBytes).toString('utf8');
 }
 
 function parseSearch(body) {
@@ -84,7 +119,11 @@ export default async function handler(request) {
 
   let search;
   try {
-    search = parseSearch(await request.json());
+    const rawBody = await readBodyWithinLimit(request);
+    if (rawBody === null) {
+      return errorResponse(400, 'INVALID_FORMAT');
+    }
+    search = parseSearch(JSON.parse(rawBody));
   } catch {
     return errorResponse(400, 'INVALID_FORMAT');
   }
@@ -93,8 +132,20 @@ export default async function handler(request) {
   const apiKey = process.env.YOUTUBE_API_KEY?.trim();
   if (!apiKey) return errorResponse(503, 'SERVICE_NOT_CONFIGURED');
 
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, UPSTREAM_TIMEOUT_MS);
+
   try {
-    const upstream = await fetch(youtubeSearchUrl(search, apiKey), { method: 'GET' });
+    const upstream = await fetch(youtubeSearchUrl(search, apiKey), {
+      method: 'GET',
+      signal: controller.signal,
+    });
+
+    if (timedOut) return errorResponse(504, 'TIMEOUT');
     if (upstream.status === 429) return errorResponse(429, 'QUOTA');
     if (!upstream.ok) return errorResponse(502, 'PROVIDER_ERROR');
 
@@ -105,8 +156,13 @@ export default async function handler(request) {
       return errorResponse(502, 'PROVIDER_ERROR');
     }
 
+    if (timedOut) return errorResponse(504, 'TIMEOUT');
     return jsonResponse(200, { videos: normalizeVideos(data) });
   } catch {
-    return errorResponse(502, 'PROVIDER_ERROR');
+    return timedOut || controller.signal.aborted
+      ? errorResponse(504, 'TIMEOUT')
+      : errorResponse(502, 'PROVIDER_ERROR');
+  } finally {
+    clearTimeout(timeout);
   }
 }
