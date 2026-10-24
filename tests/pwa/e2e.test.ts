@@ -230,6 +230,25 @@ test.describe('PWA e2e', () => {
     }
   });
 
+  test('tutor-derived video searches stay within the server query limit', async ({ page, context }) => {
+    const calls: FunctionCalls = { gemini: [], youtube: [] };
+    await mockSiteFunctions(context, calls);
+    await readyAndControlled(page);
+
+    await page.evaluate(() => {
+      const app = (window as unknown as { Estudia?: { lastTutorQuery?: string } }).Estudia;
+      if (!app) throw new Error('Estudia app not available');
+      app.lastTutorQuery = 'fracciones equivalentes '.repeat(100);
+    });
+    await page.locator('[data-vista="videos"]').click();
+
+    await expect(page.locator('#zona-videos')).toContainText(MOCK_VIDEO_TITLE);
+    expect(calls.youtube).toHaveLength(1);
+    const payload = calls.youtube[0].body as { query: string };
+    expect(payload.query.length).toBeLessThanOrEqual(1_000);
+    expect(payload.query).toContain('nivel educación básica Chile explicación');
+  });
+
   test('voice plays through the Web Speech API', async ({ page }) => {
     // speechSynthesis may not be available in headless Chrome; skip if so
     const hasSpeechSynthesis = await page.evaluate(() => 'speechSynthesis' in window);

@@ -8,6 +8,13 @@
   let activeLessonId = null;
 
   const isVideoId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{11}$/.test(value);
+  const MAX_TUTOR_VIDEO_QUERY_LENGTH = 1000;
+
+  function tutorVideoQuery(question, courseLevel) {
+    const suffix = ` nivel ${courseLevel} Chile explicación`;
+    const questionLimit = MAX_TUTOR_VIDEO_QUERY_LENGTH - suffix.length;
+    return `${question.trim().slice(0, questionLimit).trimEnd()}${suffix}`;
+  }
 
   function safeThumbnail(value) {
     try {
@@ -217,7 +224,7 @@
         // Búsqueda 2: Por pregunta del tutor (si hay pregunta activa)
         let tutorResults = [];
         if (tutorQuery) {
-          const tutorQueryRefined = `${tutorQuery} nivel ${courseLevel} Chile explicación`;
+          const tutorQueryRefined = tutorVideoQuery(tutorQuery, courseLevel);
           const tutorResponse = await E.request.run({
             id: requestId + '-tutor',
             query: tutorQueryRefined
@@ -274,7 +281,7 @@
       try {
         // Construir query más precisa: pregunta + nivel educativo + contexto chileno
         const courseLevel = getCourseLevel(course);
-        const query = `${tutorQuery} nivel ${courseLevel} Chile explicación`;
+        const query = tutorVideoQuery(tutorQuery, courseLevel);
         const response = await E.request.run({
           id: requestId,
           query
