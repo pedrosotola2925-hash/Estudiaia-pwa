@@ -82,7 +82,6 @@
     subject.replaceChildren(new Option('Selecciona una materia', ''));
     for (const item of E.data.subjects) subject.append(new Option(`${item.emoji} ${item.nombre}`, item.id));
     subject.value = state.subjectId;
-    subject.addEventListener('change', E.ui.guard(() => this.changeSubject()));
   }
 
   function populateUnits(units = []) {

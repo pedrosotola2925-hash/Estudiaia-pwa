@@ -46,6 +46,18 @@ async function selectMathAndUnit(page, { unit = 'Álgebra' } = {}) {
   await page.locator('#sel-unidad-v').selectOption({ label: unit });
 }
 
+test('changing the video subject does not show a changeSubject runtime error', async () => {
+  const { page, close } = await launch();
+  try {
+    await page.locator('[data-vista="videos"]').click();
+    await page.locator('#sel-materia-v').selectOption('matematica');
+    await expect(page.locator('#sel-unidad-v option[value="Álgebra"]')).toHaveCount(1);
+    await expect(page.locator('#app-message')).not.toContainText('changeSubject');
+  } finally {
+    await close();
+  }
+});
+
 test('video view fills subjects and units, renders untrusted metadata safely, and offers external playback', async () => {
   const { app, page, close } = await launch();
   try {
