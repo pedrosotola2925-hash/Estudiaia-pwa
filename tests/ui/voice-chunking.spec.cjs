@@ -8,8 +8,7 @@ const sentence = 'La evolución explica cómo los seres vivos cambian con el tie
 const longLesson = Array.from({ length: 18 }, () => sentence).join('');
 
 async function installVoiceMock(app) {
-  const evidence = JSON.parse(fs.readFileSync(path.resolve('.build/voice-verification.json'), 'utf8'));
-  const base64 = fs.readFileSync(evidence.audio).toString('base64');
+  const base64 = fs.readFileSync(path.resolve(__dirname, '../fixtures/voice-sample.mp3')).toString('base64');
 
   await app.evaluate(({ ipcMain }, audio) => {
     globalThis.__voiceChunks = [];
