@@ -258,6 +258,26 @@ describe('Netlify Gemini function', () => {
     ]);
   });
 
+  it('acepta la solicitud plan que envía la tarjeta de plan, sin subjectId', async () => {
+    const fetchMock = vi.fn(async () => geminiResponse('Plan día a día.'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await handler(jsonRequest({
+      request: { id: 'plan-1', kind: 'plan', course: '7º básico', examDate: '2026-10-23' },
+    }));
+
+    expect(response.status).toBe(200);
+    expectJsonNoStore(response);
+    await expect(response.json()).resolves.toEqual({ text: 'Plan día a día.' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(body.generationConfig).toEqual({ maxOutputTokens: 4096 });
+    expect(body.contents[0].parts[0].text).toContain('La prueba es el 2026-10-23');
+    // Sin materia, el topic queda con valores vacíos en vez de inventar una materia.
+    expect(body.contents[0].parts[0].text).toContain('Materia: . Unidad: .');
+  });
+
   it('traduce 429 a QUOTA sin filtrar el cuerpo del proveedor', async () => {
     const providerDetail = 'provider quota detail must not reach the client';
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: { message: providerDetail } }), {
