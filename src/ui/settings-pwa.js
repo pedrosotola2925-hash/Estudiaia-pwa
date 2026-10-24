@@ -5,45 +5,22 @@
   const $ = id => document.getElementById(id);
   const settings = E.context.settings;
 
-  function browserVoices() {
-    try {
-      return E.context.voice.getVoices();
-    } catch {
-      return [];
-    }
-  }
-
   function refresh() {
     const summary = E.settings;
     $('settings-rate').value = summary.rate;
     $('rate-label').textContent = `${summary.rate} %`;
     $('connection-status').textContent = 'IA del sitio';
 
-    const voices = [
-      new Option('Voz del navegador · español', 'es-MX-DaliaNeural'),
-      new Option('Voz chilena del navegador', 'es-CL-CatalinaNeural'),
-    ];
-    for (const voice of browserVoices()) {
-      if (voice.lang.toLowerCase().startsWith('es')) {
-        voices.push(new Option(`${voice.name} · ${voice.lang} · local`, `local:${voice.name}`));
-      }
-    }
-    if (!voices.some(option => option.value === summary.voice)) {
-      voices.push(new Option('Voz guardada no disponible', summary.voice));
-    }
-    $('voice-select').replaceChildren(...voices);
-    $('voice-select').value = summary.voice;
+    const mexicanVoice = 'es-MX-DaliaNeural';
+    $('voice-select').replaceChildren(
+      new Option('Español de México preferido · respaldo en español', mexicanVoice)
+    );
+    $('voice-select').value = mexicanVoice;
   }
 
   E.features.ajustes = {
     init() {
       refresh();
-      try {
-        E.context.voice.onVoiceChange(refresh);
-      } catch {
-        // Speech synthesis may be unavailable until the browser exposes voices.
-      }
-
       $('voice-select').onchange = E.ui.guard(async () => {
         E.voice.stop();
         try {

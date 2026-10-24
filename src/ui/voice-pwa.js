@@ -24,11 +24,6 @@
     $('voice-stop').disabled = state === 'idle';
   }
 
-  function language() {
-    const selected = E.settings?.voice || '';
-    return selected.startsWith('es-CL') ? 'es-CL' : selected.startsWith('es-MX') ? 'es-MX' : 'es';
-  }
-
   function rate() {
     return Math.max(0.5, Math.min(1.5, 1 + Number(E.settings?.rate || 0) / 100));
   }
@@ -54,7 +49,7 @@
         playing = true;
         paused = false;
         updateStatus('Leyendo…', 'playing');
-        void E.context.voice.speak(lastText, { lang: language(), rate: rate() }).then(() => {
+        void E.context.voice.speak(lastText, { rate: rate() }).then(() => {
           if (playing) {
             playing = false;
             paused = false;

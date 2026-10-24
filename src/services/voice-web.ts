@@ -4,14 +4,13 @@
  *
  * Features:
  * - window.speechSynthesis primary engine
- * - Prefers Spanish Mexico (es-MX) / es-419 voices
+ * - Prefers Spanish Mexico (es-MX), then Latin American Spanish or another Spanish voice
  * - Chunks text at sentence boundaries, max 480 chars per utterance
  * - Sequential playback via onend chain
  * - stop / pause / resume controls
  */
 
 export interface VoiceOptions {
-  lang?: string;
   rate?: number;
 }
 
@@ -96,18 +95,22 @@ export function createVoiceServiceWeb(): VoiceService {
         }
 
         const chunk = queue.shift()!;
-        const utterance = new (window as unknown as { SpeechSynthesisUtterance: typeof SpeechSynthesisUtterance }).SpeechSynthesisUtterance(chunk);
         const voices = s.getVoices();
-        const langPref = options.lang || 'es';
         const preferred =
-          voices.find(v => v.lang.startsWith(langPref) && (v.lang.includes('MX') || v.lang.includes('419'))) ||
-          voices.find(v => v.lang.startsWith(langPref)) ||
-          voices.find(v => v.lang.startsWith('es'));
-
-        if (preferred) {
-          utterance.voice = preferred;
-          utterance.lang = preferred.lang;
+          voices.find(v => v.lang.toLowerCase().startsWith('es-mx')) ||
+          voices.find(v => v.lang.toLowerCase().startsWith('es-419')) ||
+          voices.find(v => v.lang.toLowerCase().startsWith('es'));
+        if (!preferred) {
+          speaking = false;
+          queue = [];
+          currentUtterance = null;
+          reject(new Error('No hay una voz en español disponible en este navegador.'));
+          return;
         }
+
+        const utterance = new (window as unknown as { SpeechSynthesisUtterance: typeof SpeechSynthesisUtterance }).SpeechSynthesisUtterance(chunk);
+        utterance.voice = preferred;
+        utterance.lang = preferred.lang;
         utterance.rate = options.rate ?? 1;
         utterance.pitch = 1;
 
