@@ -150,8 +150,7 @@
             id: crypto.randomUUID(),
             kind: 'plan',
             course: E.course(),
-            today,
-            context: { today, examDate: selected },
+            examDate: selected,
           });
           const plan = E.Core.validateLesson(E.Core.parseJSONBlock(result.text));
           const msg = E.ui.el('div', 'Plan generado: ' + plan.titulo, 'message success');

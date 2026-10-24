@@ -1,3 +1,5 @@
+import type { GeneratedRequest, VideoResult } from '@services/providers-web';
+
 interface SettingsSummary {
   model: string;
   voice: string;
@@ -42,46 +44,24 @@ function notImplemented(method: string) {
   });
 }
 
-function createProviderApi(settingsBridge: SettingsBridge): {
-  generate: (request: { kind?: string; course?: string; question?: string; context?: string; file?: unknown }) => Promise<{ text: string }>;
-  searchVideos: (request: { query: string }) => Promise<Array<{ id: string; title: string; thumbnail: string }>>;
+function createProviderApi(): {
+  generate: (request: GeneratedRequest) => Promise<{ text: string }>;
+  searchVideos: (request: { id: string; query: string }) => Promise<VideoResult[]>;
 } {
-  // Importación dinámica para evitar ciclo si settings-bridge importa desktop-bridge
+  // Importación dinámica para evitar ciclo si settings-bridge importa desktop-bridge.
+  // El proxy no consulta secretos ni bloqueo: reenvía la solicitud completa.
   const providerPromise = import('@services/providers-web').then(
-    (mod) => mod.createProviderServiceWeb({
-      settingsStore: {
-        get: (key: string) => {
-          if (key === 'geminiKey' || key === 'youtubeKey') {
-            return settingsBridge.getSecret(key === 'geminiKey' ? 'gemini' : 'youtube');
-          }
-          return Promise.resolve(null);
-        },
-      },
-    }),
+    (mod) => mod.createProviderServiceWeb(),
   );
 
   return {
-    generate: async (request) => {
-      const providers = await providerPromise;
-      if (settingsBridge.isLocked()) {
-        throw new Error('STORE_LOCKED');
-      }
-      const prompt = request.question ?? '';
-      const text = await providers.askGemini(prompt, request.kind === 'lesson' ? undefined : undefined);
-      return { text };
-    },
-    searchVideos: async (request) => {
-      const providers = await providerPromise;
-      if (settingsBridge.isLocked()) {
-        throw new Error('STORE_LOCKED');
-      }
-      return providers.searchYouTube(request.query, 10);
-    },
+    generate: async (request) => (await providerPromise).generate(request),
+    searchVideos: async (request) => (await providerPromise).searchVideos(request),
   };
 }
 
 function createWebDesktopApi(settingsBridge: SettingsBridge | null): DesktopApi {
-  const providerApi = settingsBridge ? createProviderApi(settingsBridge) : null;
+  const providerApi = settingsBridge ? createProviderApi() : null;
 
   return {
     getSettings: settingsBridge

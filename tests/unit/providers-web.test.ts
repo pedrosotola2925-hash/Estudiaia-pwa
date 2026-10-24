@@ -1,16 +1,11 @@
-import 'fake-indexeddb/auto';
-import { webcrypto } from 'node:crypto';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createSettingsStoreWeb } from '@services/settings-web';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createProviderServiceWeb } from '@services/providers-web';
 
-const MASTER_PASSWORD = 'CorrectHorseBatteryStaple!2026';
-
-const testWindow = {
-  crypto: webcrypto as unknown as Crypto,
-  isSecureContext: true,
-  addEventListener: vi.fn(),
-};
+/**
+ * El cliente PWA ya no lee claves ni construye prompts: reenvía la solicitud a
+ * las funciones privadas de Netlify y traduce su envoltura de error segura.
+ * El mock de `fetch` solo debe ver rutas same-origin (`/.netlify/functions/*`).
+ */
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -19,179 +14,174 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-beforeAll(() => {
-  vi.stubGlobal('window', testWindow);
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
-afterAll(() => {
-  vi.unstubAllGlobals();
-});
-
-function newStore(): ReturnType<typeof createSettingsStoreWeb> {
-  return createSettingsStoreWeb({
-    dbName: `test-providers-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    storeName: 'secrets',
+function neverResolves(_input: string, init?: RequestInit): Promise<Response> {
+  return new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
   });
 }
 
+const practiceRequest = {
+  id: 'practice-1',
+  kind: 'practice',
+  course: '7º básico',
+  subjectId: 'matematica',
+  unit: 'Álgebra',
+} as const;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
 describe('providers-web', () => {
+  it('expone solo generate, searchVideos, cancel y close', () => {
+    const providers = createProviderServiceWeb();
 
-  it('askGemini lanza GEMINI_KEY_MISSING cuando no hay clave configurada', async () => {
-    const store = newStore();
-    await store.unlock(MASTER_PASSWORD);
-    const providers = createProviderServiceWeb({ settingsStore: store });
-    await expect(providers.askGemini('¿Qué son las fracciones?')).rejects.toThrow(
-      'GEMINI_KEY_MISSING',
-    );
+    expect(Object.keys(providers).sort()).toEqual(['cancel', 'close', 'generate', 'searchVideos']);
   });
 
-  it('searchYouTube lanza YOUTUBE_KEY_MISSING cuando no hay clave configurada', async () => {
-    const store = newStore();
-    await store.unlock(MASTER_PASSWORD);
-    const providers = createProviderServiceWeb({ settingsStore: store });
-    await expect(providers.searchYouTube('fracciones')).rejects.toThrow(
-      'YOUTUBE_KEY_MISSING',
-    );
-  });
-
-  it('askGemini llama a Gemini y devuelve el texto de la respuesta', async () => {
-    const store = newStore();
-    await store.unlock(MASTER_PASSWORD);
-    await store.set('geminiKey', 'gemini-test-key');
-
-    const fetchMock = vi.fn(async (input: string) => {
-      const url = new URL(input);
-      expect(url.searchParams.get('key')).toBe('gemini-test-key');
-      expect(url.pathname).toContain('generateContent');
-      expect(url.pathname).toContain('/models/gemini-3.8-flash:generateContent');
-      return jsonResponse({
-        candidates: [{ content: { parts: [{ text: 'Las fracciones son partes de un todo.' }] } }],
-      });
-    });
+  it('envía generate únicamente a la función Gemini sin clave ni modelo del cliente', async () => {
+    const fetchMock = vi.fn(async (_input: string, _init?: RequestInit): Promise<Response> => jsonResponse({ text: 'Respuesta segura.' }));
     vi.stubGlobal('fetch', fetchMock);
-    try {
-      const providers = createProviderServiceWeb({ settingsStore: store });
-      const text = await providers.askGemini('Hola');
-      expect(text).toBe('Las fracciones son partes de un todo.');
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.restoreAllMocks();
-    }
+
+    const providers = createProviderServiceWeb();
+    await expect(providers.generate({ ...practiceRequest })).resolves.toEqual({ text: 'Respuesta segura.' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('/.netlify/functions/gemini');
+    expect(fetchMock.mock.calls[0][1]?.headers).toEqual({ 'Content-Type': 'application/json' });
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body).toEqual({ request: expect.objectContaining({ id: 'practice-1', kind: 'practice' }) });
+    expect(JSON.stringify(body)).not.toMatch(/key|model/i);
+    expect(String(fetchMock.mock.calls[0][0])).not.toMatch(/key=/);
   });
 
-  it('searchYouTube llama a YouTube y devuelve vídeos normalizados y seguros', async () => {
-    const store = newStore();
-    await store.unlock(MASTER_PASSWORD);
-    await store.set('youtubeKey', 'youtube-test-key');
-
-    const fetchMock = vi.fn(async (input: string) => {
-      const url = new URL(input);
-      expect(url.searchParams.get('key')).toBe('youtube-test-key');
-      expect(url.searchParams.get('safeSearch')).toBe('strict');
-      expect(url.searchParams.get('type')).toBe('video');
-      return jsonResponse({
-        items: [
-          {
-            id: { videoId: 'abcdefghijk' },
-            snippet: {
-              title: 'Vídeo de fracciones',
-              thumbnails: { medium: { url: 'https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg' } },
-            },
-          },
-          { id: { videoId: 'javascript:evil' }, snippet: { title: 'peligroso' } },
-        ],
-      });
-    });
+  it('funciona sin almacén de ajustes y sin pedir geminiKey ni youtubeKey', async () => {
+    const fetchMock = vi.fn(async (_input: string, _init?: RequestInit): Promise<Response> => jsonResponse({ text: 'Respuesta segura.' }));
     vi.stubGlobal('fetch', fetchMock);
-    try {
-      const providers = createProviderServiceWeb({ settingsStore: store });
-      const videos = await providers.searchYouTube('fracciones', 5);
-      expect(videos).toEqual([
+
+    const providers = createProviderServiceWeb();
+    await providers.generate({ ...practiceRequest });
+
+    const rawBody = String(fetchMock.mock.calls[0][1]?.body);
+    expect(rawBody).not.toContain('geminiKey');
+    expect(rawBody).not.toContain('youtubeKey');
+    expect(rawBody).not.toContain('settingsStore');
+  });
+
+  it('searchVideos usa la función YouTube y normaliza { videos } al array esperado', async () => {
+    const fetchMock = vi.fn(async (_input: string, _init?: RequestInit): Promise<Response> => jsonResponse({
+      videos: [
         {
           id: 'abcdefghijk',
-          title: 'Vídeo de fracciones',
+          title: 'Fracciones para séptimo',
           thumbnail: 'https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg',
         },
-      ]);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.restoreAllMocks();
-    }
-  });
-
-  it('askGemini falla con código de error cuando Gemini responde malformado', async () => {
-    const store = newStore();
-    await store.unlock(MASTER_PASSWORD);
-    await store.set('geminiKey', 'gemini-test-key');
-
-    vi.stubGlobal('fetch', async () => jsonResponse({ candidates: [] }));
-    try {
-      const providers = createProviderServiceWeb({ settingsStore: store });
-      await expect(providers.askGemini('Hola')).rejects.toThrow(/vacía|inválida/i);
-    } finally {
-      vi.restoreAllMocks();
-    }
-  });
-
-  it('generate conserva el tipo de solicitud al crear una práctica', async () => {
-    const store = newStore();
-    await store.unlock(MASTER_PASSWORD);
-    await store.set('geminiKey', 'gemini-test-key');
-
-    const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body));
-      expect(body.systemInstruction.parts[0].text).toContain('exactamente cinco objetos');
-      expect(body.contents[0].parts[0].text).toContain('Curso: 7º básico');
-      expect(body.generationConfig.responseMimeType).toBe('application/json');
-      return jsonResponse({
-        candidates: [{ content: { parts: [{ text: '[{"p":"1 + 1","o":["1","2","3","4"],"c":1,"e":"Porque uno más uno es dos."}]' }] } }],
-      });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    try {
-      const providers = createProviderServiceWeb({ settingsStore: store });
-      await expect(providers.generate({
-        id: 'practice-1',
-        kind: 'practice',
-        course: '7º básico',
-        subjectId: 'matematica',
-        subjectName: 'Matemática',
-        unit: 'Álgebra',
-      })).resolves.toEqual({ text: '[{"p":"1 + 1","o":["1","2","3","4"],"c":1,"e":"Porque uno más uno es dos."}]' });
-    } finally {
-      vi.restoreAllMocks();
-    }
-  });
-
-  it('cancela una generación web activa', async () => {
-    const store = newStore();
-    await store.unlock(MASTER_PASSWORD);
-    await store.set('geminiKey', 'gemini-test-key');
-
-    const fetchMock = vi.fn((_input: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+        { id: 'javascript:evil', title: 'peligroso', thumbnail: 'https://i.ytimg.com/vi/x/mqdefault.jpg' },
+        { id: 'lmnopqrstuv', title: '   ', thumbnail: '' },
+        { id: 'qrstuvwxyz1', title: 'Miniatura ajena', thumbnail: 'https://evil.example.com/x.jpg' },
+      ],
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    try {
-      const providers = createProviderServiceWeb({ settingsStore: store });
-      const request = providers.generate({
-        id: 'cancel-practice-1',
-        kind: 'practice',
-        course: '7º básico',
-        subjectId: 'matematica',
-        unit: 'Álgebra',
-      });
-      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-      providers.cancel('cancel-practice-1');
-      await expect(request).rejects.toMatchObject({ code: 'CANCELLED' });
-    } finally {
-      vi.restoreAllMocks();
+    const providers = createProviderServiceWeb();
+    await expect(providers.searchVideos({ id: 'videos-1', query: 'fracciones' })).resolves.toEqual([
+      {
+        id: 'abcdefghijk',
+        title: 'Fracciones para séptimo',
+        thumbnail: 'https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg',
+      },
+      { id: 'qrstuvwxyz1', title: 'Miniatura ajena', thumbnail: '' },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('/.netlify/functions/youtube');
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ query: 'fracciones', maxResults: 4 });
+  });
+
+  it('mantiene cancelación y convierte el error seguro de la función en ProviderError', async () => {
+    const abortMock = vi.fn(neverResolves);
+    vi.stubGlobal('fetch', abortMock);
+    const providers = createProviderServiceWeb();
+    const pending = providers.generate({ ...practiceRequest, id: 'cancel-practice-1' });
+    await vi.waitFor(() => expect(abortMock).toHaveBeenCalledTimes(1));
+    providers.cancel('cancel-practice-1');
+    await expect(pending).rejects.toMatchObject({ name: 'ProviderError', code: 'CANCELLED' });
+    vi.unstubAllGlobals();
+
+    const quotaMock = vi.fn(async (_input: string, _init?: RequestInit): Promise<Response> => jsonResponse(
+      { error: { code: 'QUOTA', message: 'El servicio está ocupado. Inténtalo más tarde.' } },
+      429,
+    ));
+    vi.stubGlobal('fetch', quotaMock);
+    const second = createProviderServiceWeb();
+    await expect(second.generate({ ...practiceRequest })).rejects.toMatchObject({
+      name: 'ProviderError',
+      code: 'QUOTA',
+      message: 'El servicio está ocupado. Inténtalo más tarde.',
+    });
+    expect(quotaMock.mock.calls[0][0]).toBe('/.netlify/functions/gemini');
+  });
+
+  it('mantiene el límite de 30 segundos de la función', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(neverResolves);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const providers = createProviderServiceWeb();
+    const pending = providers.generate({ ...practiceRequest });
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'TIMEOUT' });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await assertion;
+  });
+
+  it('no expone texto crudo del proveedor y close cancela las operaciones activas', async () => {
+    const rawMock = vi.fn(async (_input: string, _init?: RequestInit): Promise<Response> => new Response('upstream boom https://generativelanguage.googleapis.com', { status: 502 }));
+    vi.stubGlobal('fetch', rawMock);
+    const providers = createProviderServiceWeb();
+    const rawError = await providers.generate({ ...practiceRequest }).catch((error: unknown) => error);
+    expect((rawError as Error).message).not.toContain('upstream boom');
+    expect((rawError as Error).message).not.toContain('generativelanguage');
+    expect((rawError as { code?: string }).code).toBe('PROVIDER_ERROR');
+    vi.unstubAllGlobals();
+
+    const abortMock = vi.fn(neverResolves);
+    vi.stubGlobal('fetch', abortMock);
+    const second = createProviderServiceWeb();
+    const first = second.generate({ ...practiceRequest, id: 'close-a' });
+    const other = second.generate({ ...practiceRequest, id: 'close-b' });
+    await vi.waitFor(() => expect(abortMock).toHaveBeenCalledTimes(2));
+    second.close();
+    await expect(first).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(other).rejects.toMatchObject({ code: 'CANCELLED' });
+  });
+
+  it('mantiene el límite de seis operaciones activas', async () => {
+    const fetchMock = vi.fn(neverResolves);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const providers = createProviderServiceWeb();
+    const pending = [];
+    for (let index = 0; index < 6; index += 1) {
+      pending.push(providers.generate({ ...practiceRequest, id: `busy-${index}` }));
     }
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+    await expect(providers.generate({ ...practiceRequest, id: 'busy-7' })).rejects.toMatchObject({ code: 'BUSY' });
+
+    providers.close();
+    for (const operation of pending) {
+      await expect(operation).rejects.toMatchObject({ code: 'CANCELLED' });
+    }
+  });
+
+  it('rechaza solicitudes inválidas sin llamar a la red', async () => {
+    const fetchMock = vi.fn(async (_input: string, _init?: RequestInit): Promise<Response> => jsonResponse({ text: 'no debería llamarse' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const providers = createProviderServiceWeb();
+    await expect(providers.generate({ id: 'bad id!', kind: 'practice', course: '7º básico' })).rejects.toMatchObject({ code: 'INVALID_FORMAT' });
+    await expect(providers.searchVideos({ id: 'ok-1', query: '   ' })).rejects.toMatchObject({ code: 'INVALID_FORMAT' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

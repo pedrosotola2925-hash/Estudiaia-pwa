@@ -64,16 +64,7 @@ export function createAppContext(options: AppContextOptions = {}): AppContext {
   const root = globalThis as LegacyRoot;
   const settings = options.settings ?? getSettingsBridge();
   const voice = options.voice ?? createVoiceServiceWeb();
-  const providers = options.providers ?? createProviderServiceWeb({
-    settingsStore: {
-      get: (key: string) => {
-        if (key === 'geminiKey') return settings.getSecret('gemini');
-        if (key === 'youtubeKey') return settings.getSecret('youtube');
-        return Promise.resolve(null);
-      },
-    },
-    modelResolver: async () => (await settings.getSettings()).model,
-  });
+  const providers = options.providers ?? createProviderServiceWeb();
 
   return {
     settings,

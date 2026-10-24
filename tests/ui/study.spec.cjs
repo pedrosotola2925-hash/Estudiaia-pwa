@@ -67,7 +67,9 @@ test('Plan rejects past dates and sends today to the provider', async () => {
 
     await expect.poll(() => app.evaluate(() => globalThis.__planCalls.length)).toBe(1);
     const last = await app.evaluate(() => globalThis.__planCalls[globalThis.__planCalls.length - 1]);
-    expect(last.context.today).toBe(today);
+    expect(last.examDate).toBe(today);
+    expect(last.context).toBeUndefined();
+    expect(last.today).toBeUndefined();
   } finally {
     await close();
   }
