@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test';
 type PwaWindow = Window & {
   Estudia?: { ready?: boolean };
   __speakCalls?: string[];
+  __speakLangs?: string[];
 };
 
 async function waitUntilAppReady(page: import('@playwright/test').Page) {
@@ -143,7 +144,7 @@ test.describe('PWA e2e', () => {
     await page.evaluate(async () => {
       const settings = (window as unknown as { Estudia?: { context?: { settings?: { saveSettings: (patch: { voice: string; rate: number }) => Promise<unknown> } } } }).Estudia?.context?.settings;
       if (!settings) throw new Error('Settings bridge not available');
-      await settings.saveSettings({ voice: 'es-CL-CatalinaNeural', rate: 30 });
+      await settings.saveSettings({ voice: 'es-MX-DaliaNeural', rate: 30 });
     });
 
     await page.reload();
@@ -155,11 +156,11 @@ test.describe('PWA e2e', () => {
       return await settings.getSettings();
     });
 
-    expect(stored).toEqual({ voice: 'es-CL-CatalinaNeural', rate: 30 });
+    expect(stored).toEqual({ voice: 'es-MX-DaliaNeural', rate: 30 });
 
     // The UI reflects the persisted preferences after the reload.
     await openSettings(page);
-    await expect(page.locator('#voice-select')).toHaveValue('es-CL-CatalinaNeural');
+    await expect(page.locator('#voice-select')).toHaveValue('es-MX-DaliaNeural');
     await expect(page.locator('#settings-rate')).toHaveValue('30');
     await expect(page.locator('#rate-label')).toHaveText('30 %');
   });
@@ -249,22 +250,43 @@ test.describe('PWA e2e', () => {
     expect(payload.query).toContain('nivel educación básica Chile explicación');
   });
 
-  test('voice plays through the Web Speech API', async ({ page }) => {
-    // speechSynthesis may not be available in headless Chrome; skip if so
-    const hasSpeechSynthesis = await page.evaluate(() => 'speechSynthesis' in window);
-    if (!hasSpeechSynthesis) {
-      test.skip();
-      return;
-    }
-
+  test('voice uses a Spanish fallback through the Web Speech API when Mexican voice is absent', async ({ page }) => {
     await page.addInitScript(() => {
-      const synthesis = window.speechSynthesis;
-      const original = synthesis.speak.bind(synthesis);
-      (window as unknown as PwaWindow).__speakCalls = [];
-      synthesis.speak = (utterance) => {
-        (window as unknown as PwaWindow).__speakCalls?.push(String(utterance.text));
-        return original(utterance);
+      const calls: string[] = [];
+      const langs: string[] = [];
+      const fallbackVoice = { name: 'Test Spanish', lang: 'es-ES' };
+
+      class MockUtterance {
+        text: string;
+        voice: { name: string; lang: string } | null = null;
+        lang = '';
+        rate = 1;
+        pitch = 1;
+        onend: (() => void) | null = null;
+        onerror: ((event: { error: string }) => void) | null = null;
+
+        constructor(text: string) {
+          this.text = text;
+        }
+      }
+
+      const synthesis = {
+        getVoices: () => [fallbackVoice],
+        speak: (utterance: MockUtterance) => {
+          calls.push(utterance.text);
+          langs.push(utterance.voice?.lang ?? '');
+          queueMicrotask(() => utterance.onend?.());
+        },
+        cancel: () => {},
+        pause: () => {},
+        resume: () => {},
       };
+
+      Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: synthesis });
+      Object.defineProperty(window, 'SpeechSynthesisUtterance', { configurable: true, value: MockUtterance });
+      const appWindow = window as unknown as PwaWindow;
+      appWindow.__speakCalls = calls;
+      appWindow.__speakLangs = langs;
     });
 
     await page.goto('/');
@@ -282,5 +304,6 @@ test.describe('PWA e2e', () => {
     await expect
       .poll(() => page.evaluate(() => (window as unknown as PwaWindow).__speakCalls?.length ?? 0))
       .toBeGreaterThan(0);
+    expect(await page.evaluate(() => (window as unknown as PwaWindow).__speakLangs)).toContain('es-ES');
   });
 });
