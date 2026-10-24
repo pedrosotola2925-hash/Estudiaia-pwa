@@ -83,7 +83,7 @@
               throw E.Core.invalid('El servicio devolvió una respuesta vacía.');
             }
             const questions = E.Core.validatePractice(JSON.parse(result.text));
-            activePractice = { questions, current: 0, correct: 0, subjectId: subject.id, subjectName: subject.nombre, unit };
+            activePractice = { questions, current: 0, correct: 0, incorrect: [], subjectId: subject.id, subjectName: subject.nombre, unit };
             this.renderQuestion(0);
           } catch (e) {
             E.ui.message(status, e.message || 'No se pudo crear la práctica.', 'error');
@@ -102,6 +102,7 @@
       const question = activePractice.questions[index];
       const container = createQuestionEl(question, index, async (isCorrect) => {
         if (isCorrect) activePractice.correct += 1;
+        else activePractice.incorrect.push({ index, question });
         activePractice.current += 1;
         // Pequeña pausa para que la explicación de la respuesta sea legible
         // antes de avanzar a la siguiente pregunta.
@@ -141,6 +142,20 @@
         E.ui.message(status, 'Esta práctica ya fue registrada.', 'error');
       } else {
         E.ui.message(status, `Práctica guardada: ${correct} de 5 correctas.`, 'success');
+      }
+      if (activePractice.incorrect.length > 0) {
+        const review = E.ui.el('section', '', 'practice-review');
+        review.dataset.practiceReview = 'true';
+        review.append(E.ui.el('h3', 'Preguntas para repasar'));
+        const list = E.ui.el('ol');
+        for (const { index, question } of activePractice.incorrect) {
+          const item = E.ui.el('li');
+          item.append(E.ui.el('p', `Pregunta ${index + 1} de 5: ${question.p}`));
+          item.append(E.ui.el('p', `Respuesta correcta: ${question.o[question.c]}`));
+          list.append(item);
+        }
+        review.append(list);
+        status.append(review);
       }
       activePractice = null;
       const zona = document.getElementById('zona-quiz');

@@ -43,6 +43,37 @@ async function answerPractice(page, { firstDoubleClick = false } = {}) {
   await expect(page.locator('#practice-status')).toContainText('Práctica guardada');
 }
 
+test('completed practice lists missed questions and their correct answers', async () => {
+  const { app, page, close } = await launch();
+  try {
+    await installPracticeMock(app);
+    await selectMathAndUnit(page);
+    await page.locator('#btn-crear-practica').click();
+    await expect(page.locator('[data-practice-index]')).toHaveText('1');
+
+    const answers = [0, 0, 0, 1, 1];
+    for (let index = 0; index < answers.length; index += 1) {
+      await page.locator(`[data-practice-option="${answers[index]}"]`).click();
+      if (index < answers.length - 1) {
+        await expect(page.locator('[data-practice-index]')).toHaveText(String(index + 2));
+      }
+    }
+
+    await expect(page.locator('#practice-status')).toContainText('3 de 5 correctas');
+    const review = page.locator('[data-practice-review]');
+    await expect(review).toHaveCount(1);
+    await expect(review).toContainText('Pregunta 3 de 5');
+    await expect(review).toContainText('¿Cuál es 3 + 3?');
+    await expect(review).toContainText('Respuesta correcta: 6');
+    await expect(review).toContainText('Pregunta 4 de 5');
+    await expect(review).toContainText('¿Cuál es 4 + 4?');
+    await expect(review).toContainText('Respuesta correcta: 8');
+    await expect(review).not.toContainText('¿Cuál es 5 + 5?');
+  } finally {
+    await close();
+  }
+});
+
 test('a practice attempt is stored once despite a double click and a new attempt is counted separately', async () => {
   const { app, page, close } = await launch();
   try {
