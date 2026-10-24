@@ -5,10 +5,6 @@ type PwaWindow = Window & {
   __speakCalls?: string[];
 };
 
-const MASTER_PASSWORD = 'prueba-maestra-2026';
-const TEST_MODEL = 'gemini-3.5-flash-lite';
-const TEST_GEMINI_KEY = 'AIzaSyPrueba-No-Real-Solo-Cifrado';
-
 async function waitUntilAppReady(page: import('@playwright/test').Page) {
   await page.waitForFunction(
     () => (window as unknown as PwaWindow).Estudia?.ready === true,
@@ -40,6 +36,50 @@ async function readyAndControlled(page: import('@playwright/test').Page) {
   );
   await page.waitForLoadState('load');
   await waitUntilAppReady(page);
+}
+
+const MOCK_GEMINI_TEXT = 'Respuesta simulada de EstudiaIA.';
+const MOCK_VIDEO_TITLE = 'Vídeo simulado de EstudiaIA';
+const MOCK_VIDEO_ID = 'dQw4w9WgXcQ';
+
+type FunctionCall = { url: string; body: unknown };
+
+type FunctionCalls = { gemini: FunctionCall[]; youtube: FunctionCall[] };
+
+function recordCall(request: import('@playwright/test').Request): FunctionCall {
+  let body: unknown;
+  try {
+    body = request.postDataJSON();
+  } catch {
+    body = request.postData();
+  }
+  return { url: request.url(), body };
+}
+
+/**
+ * The static test server cannot execute Netlify Functions, so the browser's
+ * function routes are answered with the same contracts the real functions use.
+ */
+async function mockSiteFunctions(
+  context: import('@playwright/test').BrowserContext,
+  calls: FunctionCalls,
+): Promise<void> {
+  await context.route('**/.netlify/functions/gemini', async route => {
+    calls.gemini.push(recordCall(route.request()));
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ text: MOCK_GEMINI_TEXT }),
+    });
+  });
+  await context.route('**/.netlify/functions/youtube', async route => {
+    calls.youtube.push(recordCall(route.request()));
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ videos: [{ id: MOCK_VIDEO_ID, title: MOCK_VIDEO_TITLE }] }),
+    });
+  });
 }
 
 test.describe('PWA e2e', () => {
@@ -122,6 +162,72 @@ test.describe('PWA e2e', () => {
     await expect(page.locator('#voice-select')).toHaveValue('es-CL-CatalinaNeural');
     await expect(page.locator('#settings-rate')).toHaveValue('30');
     await expect(page.locator('#rate-label')).toHaveText('30 %');
+  });
+
+  test('inicio answers through the site AI function without visiting Ajustes', async ({ page, context }) => {
+    const calls: FunctionCalls = { gemini: [], youtube: [] };
+    await mockSiteFunctions(context, calls);
+
+    await readyAndControlled(page);
+
+    // The user-visible goal: Inicio answers without opening Ajustes or
+    // unlocking anything, and without any key prompt.
+    await expect(page.locator('#vista-inicio')).toBeVisible();
+    await expect(page.locator('#searchInput')).toBeVisible();
+    await expect(page.locator('#settings-master-password')).toHaveCount(0);
+    await expect(page.locator('#settings-gemini-key')).toHaveCount(0);
+    await expect(page.locator('#settings-youtube-key')).toHaveCount(0);
+    await expect(page.locator('#connection-status')).toHaveText('IA del sitio');
+
+    await page.locator('#searchInput').fill('¿Qué es la fotosíntesis?');
+    await page.locator('#searchBtn').click();
+
+    await expect(page.locator('#respuestas')).toContainText(MOCK_GEMINI_TEXT);
+
+    // The answer came from the site function, carrying no key and no direct
+    // Google endpoint.
+    expect(calls.gemini).toHaveLength(1);
+    const call = calls.gemini[0];
+    expect(call.url).toContain('/.netlify/functions/gemini');
+    expect(call.url).not.toMatch(/[?&]key=/);
+    const payload = JSON.stringify(call.body);
+    expect(payload).not.toMatch(/AIza/);
+    expect(call.body).toMatchObject({
+      request: {
+        kind: 'tutor',
+        question: '¿Qué es la fotosíntesis?',
+      },
+    });
+  });
+
+  test('videos search answers through the site function without asking for keys', async ({ page, context }) => {
+    const calls: FunctionCalls = { gemini: [], youtube: [] };
+    await mockSiteFunctions(context, calls);
+
+    await readyAndControlled(page);
+    await page.locator('[data-vista="videos"]').click();
+    await expect(page.locator('#vista-videos')).toBeVisible();
+
+    // No key field exists anywhere in Vídeos.
+    await expect(page.locator('#settings-youtube-key')).toHaveCount(0);
+
+    await page.locator('#sel-materia-v').selectOption({ index: 1 });
+    const unitSelect = page.locator('#sel-unidad-v');
+    await expect(unitSelect).toBeEnabled();
+    await unitSelect.selectOption({ index: 1 });
+
+    await page.locator('#btn-buscar-videos').click();
+
+    await expect(page.locator('#zona-videos')).toContainText(MOCK_VIDEO_TITLE);
+    await expect(page.locator('#video-status')).toContainText('vídeo');
+
+    expect(calls.youtube.length).toBeGreaterThan(0);
+    for (const call of calls.youtube) {
+      expect(call.url).toContain('/.netlify/functions/youtube');
+      expect(call.url).not.toMatch(/[?&]key=/);
+      expect(call.body).toMatchObject({ maxResults: 4 });
+      expect(JSON.stringify(call.body)).not.toMatch(/AIza/);
+    }
   });
 
   test('voice plays through the Web Speech API', async ({ page }) => {

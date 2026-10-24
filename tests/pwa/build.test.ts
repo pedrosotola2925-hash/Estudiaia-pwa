@@ -3,6 +3,23 @@ import { build } from 'vite';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 
+/**
+ * Concatenates the shipped HTML, JavaScript and CSS so bundle assertions cover
+ * the whole production payload the browser actually receives.
+ */
+function collectBundleText(dir = 'dist-pwa'): string {
+  const chunks: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      chunks.push(collectBundleText(full));
+    } else if (/\.(?:js|css|html)$/.test(entry.name)) {
+      chunks.push(readFileSync(full, 'utf-8'));
+    }
+  }
+  return chunks.join('\n');
+}
+
 describe('PWA build', () => {
   it('produces dist-pwa with index.html, manifest.json, sw.js, and all UI modules', async () => {
     const result = await build({ configFile: 'vite.config.ts', mode: 'production' });
@@ -68,5 +85,39 @@ describe('PWA build', () => {
     expect(jsFiles.length).toBeGreaterThan(0);
     // The Materias unit button navigates to leccion: its renderer must ship.
     expect(readdirSync('dist-pwa/assets').some(f => /^leccion-[^/]+\.js$/.test(f))).toBe(true);
+  }, 30_000);
+
+  it('ships no Google endpoints, keys or unlock UI, and routes functions with NetworkOnly', async () => {
+    await build({ configFile: 'vite.config.ts', mode: 'production' });
+    const bundle = collectBundleText();
+
+    // The site owns the provider calls: no direct Google endpoint, no key
+    // parameter and no unlock UI may reach the browser bundle.
+    expect(bundle).not.toContain('generativelanguage.googleapis.com');
+    expect(bundle).not.toContain('www.googleapis.com/youtube/v3');
+    expect(bundle).not.toMatch(/[?&]key=/);
+    expect(bundle).not.toContain('settings-master-password');
+    expect(bundle).not.toContain('settings-gemini-key');
+    expect(bundle).not.toContain('settings-youtube-key');
+
+    // The generated worker is built from public/sw.js by vite-plugin-pwa in
+    // injectManifest mode. esbuild minification renames the strategy class, so
+    // the source pins the NetworkOnly choice and the built artifact pins the
+    // shipped route and the absence of any cache plugin on it.
+    const swSource = readFileSync('public/sw.js', 'utf-8');
+    expect(swSource).toContain('NetworkOnly');
+    expect(swSource).toContain('/.netlify/functions/');
+    expect(swSource).toMatch(/new NetworkOnly\(\)/);
+
+    const swContent = readFileSync('dist-pwa/sw.js', 'utf-8');
+    expect(swContent).toContain('/.netlify/functions/');
+    expect(swContent).toMatch(/\.method==="POST"&&/);
+    const routeStart = swContent.indexOf('/.netlify/functions/');
+    const routeEnd = swContent.indexOf('i.ytimg.com', routeStart);
+    expect(routeStart).toBeGreaterThan(-1);
+    expect(routeEnd).toBeGreaterThan(routeStart);
+    // No cache name, no expiration and no cacheable-response plugin may be
+    // attached to the function route.
+    expect(swContent.slice(routeStart, routeEnd)).not.toContain('cacheName');
   }, 30_000);
 });

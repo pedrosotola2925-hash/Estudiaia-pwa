@@ -2,7 +2,7 @@
 
 import { precacheAndRoute } from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
-import { StaleWhileRevalidate } from 'workbox-strategies';
+import { StaleWhileRevalidate, NetworkOnly } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 
@@ -32,6 +32,12 @@ self.addEventListener('activate', (event) => {
     removeLegacyGeminiMetadata(),
   ]));
 });
+
+registerRoute(
+  ({ url, request }) =>
+    request.method === 'POST' && url.pathname.startsWith('/.netlify/functions/'),
+  new NetworkOnly()
+);
 
 registerRoute(
   ({ url }) => url.hostname === 'i.ytimg.com',
