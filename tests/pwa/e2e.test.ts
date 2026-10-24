@@ -25,11 +25,21 @@ async function waitUntilServiceWorkerActive(page: import('@playwright/test').Pag
   );
 }
 
-async function unlockKeys(page: import('@playwright/test').Page, password: string) {
+async function openSettings(page: import('@playwright/test').Page) {
   await page.locator('[data-vista="ajustes"]').click();
-  await page.locator('#settings-master-password').fill(password);
-  await page.getByRole('button', { name: 'Desbloquear claves' }).click();
-  await expect(page.locator('#settings-status')).toContainText('desbloqueadas', { timeout: 30000 });
+  await expect(page.locator('#settings-form')).toBeVisible();
+}
+
+async function readyAndControlled(page: import('@playwright/test').Page) {
+  await page.goto('/');
+  await waitUntilAppReady(page);
+  await page.waitForFunction(
+    () => Boolean(navigator.serviceWorker.controller),
+    undefined,
+    { timeout: 30000 },
+  );
+  await page.waitForLoadState('load');
+  await waitUntilAppReady(page);
 }
 
 test.describe('PWA e2e', () => {
@@ -55,70 +65,63 @@ test.describe('PWA e2e', () => {
     expect(registration?.controlling).toBe(true);
   });
 
-  test('settings persist across reload and stay encrypted at rest', async ({ page }) => {
-    await page.goto('/');
-    await waitUntilAppReady(page);
-    await page.waitForFunction(
-      () => Boolean(navigator.serviceWorker.controller),
-      undefined,
-      { timeout: 30000 },
-    );
-    await page.waitForLoadState('load');
-    await waitUntilAppReady(page);
+  test('ajustes offers no unlock, key or model control and no provider action', async ({ page }) => {
+    await readyAndControlled(page);
+    await openSettings(page);
 
-    // Unlock and save settings via the settings bridge directly to avoid UI flakiness
-    await page.evaluate(async (password) => {
-      const settings = (window as unknown as { Estudia?: { context?: { settings?: { unlock: (p: string) => Promise<void>; saveSettings: (patch: { model: string; geminiKey: string } ) => Promise<unknown> } } } }).Estudia?.context?.settings;
+    // A fresh PWA never asks for a master password or a provider key.
+    await expect(page.locator('#settings-master-password')).toHaveCount(0);
+    await expect(page.locator('#settings-gemini-key')).toHaveCount(0);
+    await expect(page.locator('#settings-youtube-key')).toHaveCount(0);
+    await expect(page.locator('#settings-model')).toHaveCount(0);
+    await expect(page.locator('#check-gemini')).toHaveCount(0);
+    await expect(page.locator('#check-youtube')).toHaveCount(0);
+    await expect(page.locator('#clear-gemini')).toHaveCount(0);
+    await expect(page.locator('#clear-youtube')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Desbloquear claves' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Bloquear ahora' })).toHaveCount(0);
+    await expect(page.getByText('Contraseña maestra')).toHaveCount(0);
+
+    // The site owns the AI and video services; only voice and rate remain.
+    await expect(page.locator('#vista-ajustes')).toContainText('los administra el sitio');
+    await expect(page.locator('#vista-ajustes')).toContainText('internet');
+    await expect(page.locator('#connection-status')).toHaveText('IA del sitio');
+
+    // Voice and rate controls survive.
+    await expect(page.locator('#settings-rate')).toBeVisible();
+    await expect(page.locator('#settings-save')).toBeVisible();
+
+    // The voice selector and its preview still work on the home view.
+    await page.locator('[data-vista="inicio"]').click();
+    await expect(page.locator('#voice-select')).toBeVisible();
+    await expect(page.locator('#voice-preview')).toBeVisible();
+  });
+
+  test('voice and rate preferences persist across a reload', async ({ page }) => {
+    await readyAndControlled(page);
+
+    await page.evaluate(async () => {
+      const settings = (window as unknown as { Estudia?: { context?: { settings?: { saveSettings: (patch: { voice: string; rate: number }) => Promise<unknown> } } } }).Estudia?.context?.settings;
       if (!settings) throw new Error('Settings bridge not available');
-      await settings.unlock(password);
-      await settings.saveSettings({ model: 'gemini-3.5-flash-lite', geminiKey: 'AIzaSyPrueba-No-Real-Solo-Cifrado' });
-    }, MASTER_PASSWORD);
-
-    await page.reload();
-    await waitUntilAppReady(page);
-
-    // Unlock again and verify persistence
-    await page.evaluate(async (password) => {
-      const settings = (window as unknown as { Estudia?: { context?: { settings?: { unlock: (p: string) => Promise<void>; getSettings: () => Promise<{ model: string; hasGeminiKey: boolean }> } } } }).Estudia?.context?.settings;
-      if (!settings) throw new Error('Settings bridge not available');
-      await settings.unlock(password);
-      return await settings.getSettings();
-    }, MASTER_PASSWORD).then((result) => {
-      expect(result.model).toBe('gemini-3.8-flash');
-      expect(result.hasGeminiKey).toBe(true);
+      await settings.saveSettings({ voice: 'es-CL-CatalinaNeural', rate: 30 });
     });
 
-    // Verify encryption at rest - secret not in plaintext storage
-    const leaked = await page.evaluate(async (secret) => {
-      const stored: string[] = [];
-      for (let index = 0; index < localStorage.length; index += 1) {
-        stored.push(localStorage.getItem(localStorage.key(index) as string) ?? '');
-      }
-      for (let index = 0; index < sessionStorage.length; index += 1) {
-        stored.push(sessionStorage.getItem(sessionStorage.key(index) as string) ?? '');
-      }
+    await page.reload();
+    await readyAndControlled(page);
 
-      const databases = await (indexedDB.databases?.() ?? []);
-      for (const entry of databases) {
-        if (!entry.name) continue;
-        const database: IDBDatabase = await new Promise((resolve, reject) => {
-          const request = indexedDB.open(entry.name as string);
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error);
-        });
-        for (const storeName of Array.from(database.objectStoreNames)) {
-          const rows: string[] = await new Promise((resolve, reject) => {
-            const request = database.transaction(storeName).objectStore(storeName).getAll();
-            request.onsuccess = () => resolve(request.result.map((value) => JSON.stringify(value)));
-            request.onerror = () => reject(request.error);
-          });
-          stored.push(...rows);
-        }
-      }
-      return stored.some((value) => value.includes(secret));
-    }, 'AIzaSyPrueba-No-Real-Solo-Cifrado');
+    const stored = await page.evaluate(async () => {
+      const settings = (window as unknown as { Estudia?: { context?: { settings?: { getSettings: () => Promise<{ voice: string; rate: number }> } } } }).Estudia?.context?.settings;
+      if (!settings) throw new Error('Settings bridge not available');
+      return await settings.getSettings();
+    });
 
-    expect(leaked).toBe(false);
+    expect(stored).toEqual({ voice: 'es-CL-CatalinaNeural', rate: 30 });
+
+    // The UI reflects the persisted preferences after the reload.
+    await openSettings(page);
+    await expect(page.locator('#voice-select')).toHaveValue('es-CL-CatalinaNeural');
+    await expect(page.locator('#settings-rate')).toHaveValue('30');
+    await expect(page.locator('#rate-label')).toHaveText('30 %');
   });
 
   test('voice plays through the Web Speech API', async ({ page }) => {

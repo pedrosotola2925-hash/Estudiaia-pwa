@@ -43,30 +43,13 @@ describe('app-context', () => {
     const { initializeWebDesktopBridge } = await import('@services/desktop-bridge');
     const settingsBridge = {
       getSettings: async () => ({
-        model: 'gemini-3.5-flash-lite',
         voice: 'es-MX-DaliaNeural',
         rate: 100,
-        hasGeminiKey: false,
-        hasYoutubeKey: false,
       }),
       saveSettings: async () => ({
-        model: 'gemini-3.5-flash-lite',
         voice: 'es-MX-DaliaNeural',
         rate: 100,
-        hasGeminiKey: false,
-        hasYoutubeKey: false,
       }),
-      clearKey: async () => ({
-        model: 'gemini-3.5-flash-lite',
-        voice: 'es-MX-DaliaNeural',
-        rate: 100,
-        hasGeminiKey: false,
-        hasYoutubeKey: false,
-      }),
-      getSecret: async () => {
-        throw new Error('getSecret must not be called');
-      },
-      isLocked: () => true,
     };
     const target: { desktop?: Record<string, (...args: any[]) => unknown> } = {};
     await initializeWebDesktopBridge(target, async () => ({ getSettingsBridge: () => settingsBridge }));

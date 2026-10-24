@@ -24,7 +24,6 @@ async function startPwa(): Promise<void> {
   await import('@ui/router.js');
   await import('@ui/voice-player.js');
   await import('@ui/voice-pwa.js');
-  await import('@ui/settings.js');
   await import('@ui/settings-pwa.js');
   await import('@ui/tutor.js');
   await import('@ui/materias.js');

@@ -1,26 +1,14 @@
 /**
  * Web-compatible store shim.
  * Provides the same interface as the Electron store.js for UI modules.
- * Delegates to the settings-bridge and settings-web for encrypted storage.
+ * Settings live in the PWA preferences store; this shim only keeps the course,
+ * practice and lesson history plus the cache.
  */
-
-import { getSettingsBridge } from '@services/settings-bridge';
 
 // Create a minimal store interface that UI modules can use
 const store = {
-  // Settings are now handled by the bridge
-  getSettings: () => {
-    // This is a sync getter for compatibility, but actual settings are async
-    // Return defaults - the real async loading happens in bootstrap
-    return {
-      model: 'gemini-3.8-flash',
-      voice: 'es-MX-DaliaNeural',
-      rate: -5,
-      hasGeminiKey: false,
-      hasYoutubeKey: false,
-    };
-  },
-
+  // Preferences (voice/rate) are handled by the settings bridge; bootstrap loads
+  // them asynchronously. Only the cache and study history live here.
   // Cache for videos/lessons (uses localStorage for now, will be migrated to IndexedDB later)
   getCache: (key) => {
     try {

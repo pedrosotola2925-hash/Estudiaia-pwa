@@ -415,96 +415,81 @@ describe('encrypted web settings session expiry and invalidation', () => {
 });
 
 describe('web settings wrapper', () => {
-  it('starts with a default summary when neither IndexedDB store exists yet', async () => {
+  it('starts with default preferences when neither IndexedDB store exists yet', async () => {
     const wrapper = createSettingsStoreWebWrapper({
       dbName: nextDatabaseName('fresh-default-layout'),
     });
 
-    await expect(wrapper.getSummary()).resolves.toMatchObject({
-      model: 'gemini-3.8-flash',
-      hasGeminiKey: false,
-      hasYoutubeKey: false,
+    await expect(wrapper.getSummary()).resolves.toEqual({
+      voice: 'es-MX-DaliaNeural',
+      rate: -5,
     });
   });
 
-  it('migrates the former default Gemini model after a reload', async () => {
-    const dbName = nextDatabaseName('migrate-former-default-model');
+  it('exposes no secret, model, lock or migration operation', () => {
+    const wrapper = createSettingsStoreWebWrapper({
+      dbName: nextDatabaseName('preferences-only-surface'),
+    });
+
+    expect(Object.keys(wrapper).sort()).toEqual(['getSummary', 'save']);
+    expect(wrapper).not.toHaveProperty('getSecret');
+    expect(wrapper).not.toHaveProperty('clearSecret');
+    expect(wrapper).not.toHaveProperty('unlock');
+    expect(wrapper).not.toHaveProperty('setMasterPassword');
+    expect(wrapper).not.toHaveProperty('lock');
+    expect(wrapper).not.toHaveProperty('isLocked');
+    expect(wrapper).not.toHaveProperty('isEncryptionAvailable');
+    expect(wrapper).not.toHaveProperty('migrateFromElectron');
+  });
+
+  it('guarda voz y velocidad sin abrir ni leer el almacén de secretos', async () => {
+    const settings = createSettingsStoreWebWrapper({ dbName: nextDatabaseName('preferences-only') });
+    await expect(settings.save({ voice: 'es-CL-CatalinaNeural', rate: 10 }))
+      .resolves.toEqual({ voice: 'es-CL-CatalinaNeural', rate: 10 });
+  });
+
+  it('rejects any patch that still mentions secrets, the model, or unknown fields', async () => {
+    const wrapper = createSettingsStoreWebWrapper({
+      dbName: nextDatabaseName('no-secret-patch-keys'),
+    });
+
+    for (const patch of [
+      { geminiKey: EXAMPLE_SECRET },
+      { youtubeKey: EXAMPLE_SECRET },
+      { model: 'gemini-2.0-flash' },
+      { unknownField: 1 },
+    ] as unknown[]) {
+      await expect(wrapper.save(patch as never)).rejects.toThrow(/invalid/i);
+    }
+  });
+
+  it('rejects invalid voice and rate values before persisting anything', async () => {
+    const dbName = nextDatabaseName('invalid-preferences');
     const wrapper = createSettingsStoreWebWrapper({ dbName });
-    await wrapper.save({ model: 'gemini-3.5-flash-lite' });
+
+    await expect(wrapper.save({ voice: 'not-a-voice' })).rejects.toThrow(/voice/i);
+    await expect(wrapper.save({ rate: 1234 })).rejects.toThrow(/rate/i);
 
     const reloaded = createSettingsStoreWebWrapper({ dbName });
-    await expect(reloaded.getSummary()).resolves.toMatchObject({
-      model: 'gemini-3.8-flash',
+    await expect(reloaded.getSummary()).resolves.toEqual({
+      voice: 'es-MX-DaliaNeural',
+      rate: -5,
     });
   });
 
-  it('saves non-secret settings while the encrypted store remains locked', async () => {
-    const dbName = nextDatabaseName('non-secret-while-locked');
+  it('persists preferences across a reload', async () => {
+    const dbName = nextDatabaseName('preferences-persist');
     const wrapper = createSettingsStoreWebWrapper({ dbName });
-
-    expect(wrapper.isLocked()).toBe(true);
-    await expect(wrapper.save({ model: 'gemini-2.0-flash' })).resolves.toMatchObject({
-      model: 'gemini-2.0-flash',
-    });
-    expect(wrapper.isLocked()).toBe(true);
+    await wrapper.save({ voice: 'es-CL-CatalinaNeural', rate: 25 });
 
     const reloaded = createSettingsStoreWebWrapper({ dbName });
-    await expect(reloaded.getSummary()).resolves.toMatchObject({
-      model: 'gemini-2.0-flash',
+    await expect(reloaded.getSummary()).resolves.toEqual({
+      voice: 'es-CL-CatalinaNeural',
+      rate: 25,
     });
   });
 
-  it('treats blank secret form fields as unchanged while locked', async () => {
-    const wrapper = createSettingsStoreWebWrapper({
-      dbName: nextDatabaseName('blank-secret-form-fields'),
-    });
-
-    await wrapper.unlock(MASTER_PASSWORD);
-    await wrapper.save({ geminiKey: EXAMPLE_SECRET });
-    wrapper.lock();
-
-    await expect(wrapper.save({
-      model: 'gemini-2.0-flash',
-      geminiKey: '',
-      youtubeKey: '',
-    })).resolves.toMatchObject({
-      model: 'gemini-2.0-flash',
-      hasGeminiKey: true,
-    });
-    expect(wrapper.isLocked()).toBe(true);
-  });
-
-  it('persists, reads, and clears an encrypted secret through the active wrapper session', async () => {
-    const wrapper = createSettingsStoreWebWrapper({
-      dbName: nextDatabaseName('wrapper-secret-lifecycle'),
-    });
-
-    await wrapper.unlock(MASTER_PASSWORD);
-    await wrapper.save({ geminiKey: EXAMPLE_SECRET });
-
-    await expect(wrapper.getSecret('gemini')).resolves.toBe(EXAMPLE_SECRET);
-    await expect(wrapper.getSummary()).resolves.toMatchObject({ hasGeminiKey: true });
-
-    await wrapper.clearSecret('gemini');
-    await expect(wrapper.getSecret('gemini')).resolves.toBe('');
-    await expect(wrapper.getSummary()).resolves.toMatchObject({ hasGeminiKey: false });
-  });
-
-  it('reads legacy encrypted records from the original database and secrets store by default', async () => {
-    const dbName = nextDatabaseName('legacy-estudiaia-settings');
-    const legacyStore = createSettingsStoreWeb({ dbName, storeName: 'secrets' });
-    await legacyStore.unlock(MASTER_PASSWORD);
-    await legacyStore.set('geminiKey', EXAMPLE_SECRET);
-    legacyStore.lock();
-
-    const wrapper = createSettingsStoreWebWrapper({ dbName });
-    await expect(wrapper.getSummary()).resolves.toMatchObject({ hasGeminiKey: true });
-    await wrapper.unlock(MASTER_PASSWORD);
-
-    await expect(wrapper.getSecret('gemini')).resolves.toBe(EXAMPLE_SECRET);
-  });
-
-  it('reads cccbdb2 plaintext settings and encrypted secrets without changing legacy records', async () => {
+  it('reads legacy plaintext preferences without touching the legacy record or ciphertext', async () => {
     const dbName = nextDatabaseName('cccbdb2-layout');
     const legacySettings = {
       model: 'gemini-2.0-flash',
@@ -530,17 +515,12 @@ describe('web settings wrapper', () => {
 
     const wrapper = createSettingsStoreWebWrapper({ dbName });
     await expect(wrapper.getSummary()).resolves.toEqual({
-      ...legacySettings,
-      hasGeminiKey: true,
-      hasYoutubeKey: false,
+      voice: 'es-CL-CatalinaNeural',
+      rate: 12,
     });
-
-    await wrapper.unlock(MASTER_PASSWORD);
-    await expect(wrapper.getSecret('gemini')).resolves.toBe(EXAMPLE_SECRET);
-    await expect(wrapper.getSummary()).resolves.toEqual({
-      ...legacySettings,
-      hasGeminiKey: true,
-      hasYoutubeKey: false,
+    await expect(wrapper.save({ rate: 20 })).resolves.toEqual({
+      voice: 'es-CL-CatalinaNeural',
+      rate: 20,
     });
 
     const preservedConfigDatabase = await openDB<PlainSettingsTestDatabase>(dbName);
@@ -548,24 +528,47 @@ describe('web settings wrapper', () => {
     preservedConfigDatabase.close();
     await expect(readEncryptedRecord(`${dbName}-secrets`, 'geminiKey')).resolves.toEqual(legacyCiphertext);
   });
+
+  it('ignores a legacy model field and keeps only voice and rate', async () => {
+    const dbName = nextDatabaseName('legacy-model-ignored');
+    const configDatabase = await openDB<PlainSettingsTestDatabase>(dbName, 1, {
+      upgrade(database) {
+        database.createObjectStore('settings');
+      },
+    });
+    await configDatabase.put('settings', {
+      model: 'gemini-2.0-flash',
+      voice: 'es-CL-CatalinaNeural',
+      rate: 7,
+    }, 'config');
+    configDatabase.close();
+
+    const wrapper = createSettingsStoreWebWrapper({ dbName });
+    const summary = await wrapper.getSummary();
+    expect(summary).not.toHaveProperty('model');
+    expect(summary).not.toHaveProperty('hasGeminiKey');
+    expect(summary).not.toHaveProperty('hasYoutubeKey');
+  });
 });
 
 describe('web settings bridge', () => {
-  it('delegates setup, encrypted save, lock, unlock, and clear to the wrapper store', async () => {
+  it('exposes only getSettings and saveSettings for voice and rate', async () => {
     resetSettingsBridge();
     const bridge = getSettingsBridge();
 
-    expect(bridge.isLocked()).toBe(true);
-    await bridge.setMasterPassword(MASTER_PASSWORD);
-    await bridge.saveSettings({ youtubeKey: EXAMPLE_SECRET });
-    await expect(bridge.getSettings()).resolves.toMatchObject({ hasYoutubeKey: true });
+    expect(Object.keys(bridge).sort()).toEqual(['getSettings', 'saveSettings']);
+    expect(bridge).not.toHaveProperty('clearKey');
+    expect(bridge).not.toHaveProperty('getSecret');
+    expect(bridge).not.toHaveProperty('setMasterPassword');
+    expect(bridge).not.toHaveProperty('unlock');
+    expect(bridge).not.toHaveProperty('lock');
+    expect(bridge).not.toHaveProperty('isLocked');
+    expect(bridge).not.toHaveProperty('isEncryptionAvailable');
+    expect(bridge).not.toHaveProperty('migrateFromElectron');
 
-    bridge.lock();
-    await expect(bridge.saveSettings({ youtubeKey: EXAMPLE_SECRET })).rejects.toThrow(/unlock|locked/i);
-
-    await bridge.unlock(MASTER_PASSWORD);
-    await bridge.clearKey('youtube');
-    await expect(bridge.getSettings()).resolves.toMatchObject({ hasYoutubeKey: false });
+    await expect(bridge.saveSettings({ voice: 'es-CL-CatalinaNeural', rate: 30 }))
+      .resolves.toEqual({ voice: 'es-CL-CatalinaNeural', rate: 30 });
+    await expect(bridge.getSettings()).resolves.toEqual({ voice: 'es-CL-CatalinaNeural', rate: 30 });
   });
 
   it('rejects settings operations when the settings bridge module cannot load', async () => {
@@ -577,9 +580,9 @@ describe('web settings bridge', () => {
     });
 
     if (!target.desktop) throw new Error('Expected unavailable desktop bridge');
-    await expect(target.desktop.getSettings()).rejects.toThrow(/settings bridge unavailable/i);
-    await expect(target.desktop.saveSettings()).rejects.toThrow(/settings bridge unavailable/i);
-    await expect(target.desktop.clearKey()).rejects.toThrow(/settings bridge unavailable/i);
+    const unavailable = target.desktop;
+    await expect(unavailable.getSettings()).rejects.toThrow(/settings bridge unavailable/i);
+    await expect(unavailable.saveSettings()).rejects.toThrow(/settings bridge unavailable/i);
     expect(target.desktop).not.toHaveProperty('_bridge');
   });
 

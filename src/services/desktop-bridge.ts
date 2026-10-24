@@ -1,27 +1,11 @@
+import type { SettingsSummary } from '@services/settings-bridge';
 import type { GeneratedRequest, VideoResult } from '@services/providers-web';
 
-interface SettingsSummary {
-  model: string;
-  voice: string;
-  rate: number;
-  hasGeminiKey: boolean;
-  hasYoutubeKey: boolean;
-}
+export type { SettingsSummary };
 
-interface SettingsPatch {
-  model?: string;
-  voice?: string;
-  rate?: number;
-  geminiKey?: string;
-  youtubeKey?: string;
-}
-
-interface SettingsBridge {
+export interface SettingsBridge {
   getSettings(): Promise<SettingsSummary>;
-  saveSettings(patch: SettingsPatch): Promise<SettingsSummary>;
-  clearKey(provider: 'gemini' | 'youtube'): Promise<SettingsSummary>;
-  getSecret(provider: 'gemini' | 'youtube'): Promise<string>;
-  isLocked(): boolean;
+  saveSettings(patch: { voice?: string; rate?: number }): Promise<SettingsSummary>;
 }
 
 type DesktopApi = Record<string, (...args: any[]) => unknown>;
@@ -68,10 +52,7 @@ function createWebDesktopApi(settingsBridge: SettingsBridge | null): DesktopApi 
       ? () => settingsBridge.getSettings()
       : unavailableSettingsOperation,
     saveSettings: settingsBridge
-      ? (patch: SettingsPatch) => settingsBridge.saveSettings(patch)
-      : unavailableSettingsOperation,
-    clearKey: settingsBridge
-      ? (provider: 'gemini' | 'youtube') => settingsBridge.clearKey(provider)
+      ? (patch: { voice?: string; rate?: number }) => settingsBridge.saveSettings(patch)
       : unavailableSettingsOperation,
     searchVideos: providerApi
       ? providerApi.searchVideos

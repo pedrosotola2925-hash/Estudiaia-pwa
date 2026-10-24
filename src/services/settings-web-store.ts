@@ -1,41 +1,23 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import { createSettingsStoreWeb } from './settings-web.ts';
 
 const VOICES = ['es-MX-DaliaNeural', 'es-CL-CatalinaNeural'] as const;
-const LEGACY_DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
-const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 
-interface SettingsSummary {
-  model: string;
+export interface SettingsSummary {
   voice: string;
   rate: number;
-  hasGeminiKey: boolean;
-  hasYoutubeKey: boolean;
 }
 
-interface SettingsPatch {
-  model?: string;
+export interface SettingsPatch {
   voice?: string;
   rate?: number;
-  geminiKey?: string;
-  youtubeKey?: string;
 }
 
 export interface SettingsStoreWebWrapper {
   getSummary(): Promise<SettingsSummary>;
-  getSecret(provider: 'gemini' | 'youtube'): Promise<string>;
   save(patch: SettingsPatch): Promise<SettingsSummary>;
-  clearSecret(provider: 'gemini' | 'youtube'): Promise<SettingsSummary>;
-  setMasterPassword(password: string): Promise<void>;
-  unlock(password: string): Promise<void>;
-  lock(): void;
-  isLocked(): boolean;
-  isEncryptionAvailable(): Promise<boolean>;
-  migrateFromElectron(electronData: unknown): Promise<{ success: boolean; reason?: string }>;
 }
 
 interface PlainSettings {
-  model: string;
   voice: string;
   rate: number;
 }
@@ -45,66 +27,128 @@ interface PlainSettingsDBSchema extends DBSchema {
     key: string;
     value: PlainSettings;
   };
+  [storeName: string]: {
+    key: string;
+    value: PlainSettings;
+  };
 }
 
 const DEFAULT_SETTINGS: PlainSettings = {
-  model: DEFAULT_GEMINI_MODEL,
   voice: VOICES[0],
   rate: -5,
 };
 
-const SECRET_FIELDS = [
-  ['geminiKey', 'gemini'],
-  ['youtubeKey', 'youtube'],
-] as const;
-
 /**
- * Higher-level settings store that mimics the Electron createSettingsStore interface.
- * Uses IndexedDB for unencrypted settings and settings-web for encrypted secrets.
- * Requires password-based unlock for secret operations.
+ * PWA preferences store. It persists and returns only the voice and the reading
+ * rate: there is no secret, model, unlock or migration operation, and it never
+ * opens, probes, migrates, deletes or decrypts the former `secrets` database.
+ *
+ * Voice and rate can still be read from the existing plaintext preferences
+ * database; any legacy shape is normalized in memory without rewriting the
+ * stored record or touching ciphertext.
  */
 export function createSettingsStoreWebWrapper(options: {
   dbName?: string;
   settingsDbName?: string;
-  secretsDbName?: string;
-  storeName?: string;
   settingsStoreName?: string;
 } = {}): SettingsStoreWebWrapper {
   const dbName = options.dbName ?? 'estudiaia-settings';
-  // New plaintext settings live separately, while reads also fall back to cccbdb2's
-  // <dbName>/settings layout without modifying it.
+  // Plaintext preferences live at `<dbName>-settings`; reads fall back to
+  // cccbdb2's `<dbName>/settings` layout without modifying it.
   const settingsDbName = options.settingsDbName ?? `${dbName}-settings`;
   const settingsStoreName = options.settingsStoreName ?? 'settings';
   const legacySettingsDbName = options.settingsDbName === undefined && settingsDbName !== dbName
     ? dbName
-    : null;
-  // Keep encrypted records at the original Task 2 location: <dbName>/secrets.
-  // cccbdb2 stored the same records at <dbName>-secrets/secrets, so retain a
-  // read fallback instead of moving or discarding legacy ciphertext.
-  const secretsDbName = options.secretsDbName ?? dbName;
-  const secretsStoreName = options.storeName ?? 'secrets';
-  const legacySecretsDbName = `${dbName}-secrets`;
-
-  const secretsStore = createSettingsStoreWeb({
-    dbName: secretsDbName,
-    storeName: secretsStoreName,
-  });
-  const legacySecretsStore = options.secretsDbName === undefined && legacySecretsDbName !== secretsDbName
-    ? createSettingsStoreWeb({
-      dbName: legacySecretsDbName,
-      storeName: secretsStoreName,
-    })
     : null;
 
   let settingsCache: PlainSettings | null = null;
   let settingsDatabase: IDBPDatabase<PlainSettingsDBSchema> | null = null;
   let settingsDatabasePromise: Promise<IDBPDatabase<PlainSettingsDBSchema>> | null = null;
 
-  function migrateFormerDefaultModel(settings: PlainSettings): PlainSettings {
-    if (settings.model !== LEGACY_DEFAULT_GEMINI_MODEL) return settings;
-    return { ...settings, model: DEFAULT_GEMINI_MODEL };
+  function normalizeVoice(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    return VOICES.includes(value as typeof VOICES[number]) || /^local:[^\x00-\x1f]{1,150}$/.test(value)
+      ? value
+      : null;
   }
 
+  function normalizeRate(value: unknown): number | null {
+    return Number.isInteger(value) && (value as number) >= -50 && (value as number) <= 50
+      ? (value as number)
+      : null;
+  }
+
+  function normalizeSettings(value: unknown): PlainSettings {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { ...DEFAULT_SETTINGS };
+    }
+    const stored = value as { voice?: unknown; rate?: unknown };
+    return {
+      voice: normalizeVoice(stored.voice) ?? DEFAULT_SETTINGS.voice,
+      rate: normalizeRate(stored.rate) ?? DEFAULT_SETTINGS.rate,
+    };
+  }
+
+  async function loadSettings(): Promise<PlainSettings> {
+    if (settingsCache) return settingsCache;
+    const database = await getSettingsDB();
+    const stored = await database.get(settingsStoreName, 'config');
+    if (stored) {
+      settingsCache = normalizeSettings(stored);
+      return settingsCache;
+    }
+    const legacySettings = await loadLegacySettings();
+    if (legacySettings) {
+      settingsCache = normalizeSettings(legacySettings);
+      return settingsCache;
+    }
+    settingsCache = { ...DEFAULT_SETTINGS };
+    return settingsCache;
+  }
+
+  async function saveSettings(settings: PlainSettings): Promise<void> {
+    const database = await getSettingsDB();
+    await database.put(settingsStoreName, settings, 'config');
+    settingsCache = settings;
+  }
+
+  function validateVoice(voice: string): boolean {
+    return normalizeVoice(voice) !== null;
+  }
+
+  function validateRate(rate: number): boolean {
+    return normalizeRate(rate) !== null;
+  }
+
+  async function getSummary(): Promise<SettingsSummary> {
+    const settings = await loadSettings();
+    return { voice: settings.voice, rate: settings.rate };
+  }
+
+  async function save(patch: SettingsPatch): Promise<SettingsSummary> {
+    const allowedKeys = ['voice', 'rate'];
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch) ||
+      Object.keys(patch).some(key => !allowedKeys.includes(key))) {
+      throw new Error('Invalid patch');
+    }
+
+    const settings = await loadSettings();
+    const nextSettings: PlainSettings = { ...settings };
+    for (const field of allowedKeys) {
+      if (patch[field] === undefined) continue;
+      if (field === 'voice' && !validateVoice(patch.voice!)) throw new Error('Invalid voice');
+      if (field === 'rate' && !validateRate(patch.rate!)) throw new Error('Invalid rate');
+      nextSettings[field] = patch[field]!;
+    }
+
+    await saveSettings(nextSettings);
+    return getSummary();
+  }
+
+  return {
+    getSummary,
+    save,
+  };
   async function getSettingsDB() {
     if (settingsDatabase) return settingsDatabase;
     if (!settingsDatabasePromise) {
@@ -146,171 +190,4 @@ export function createSettingsStoreWebWrapper(options: {
       database.close();
     }
   }
-
-  async function loadSettings(): Promise<PlainSettings> {
-    if (settingsCache) return settingsCache;
-    const database = await getSettingsDB();
-    const stored = await database.get(settingsStoreName, 'config');
-    if (stored) {
-      const migrated = migrateFormerDefaultModel(stored);
-      if (migrated !== stored) {
-        await database.put(settingsStoreName, migrated, 'config');
-      }
-      settingsCache = migrated;
-      return migrated;
-    }
-    const legacySettings = await loadLegacySettings();
-    if (legacySettings) {
-      const migrated = migrateFormerDefaultModel(legacySettings);
-      if (migrated !== legacySettings) {
-        await database.put(settingsStoreName, migrated, 'config');
-      }
-      settingsCache = migrated;
-      return migrated;
-    }
-    settingsCache = { ...DEFAULT_SETTINGS };
-    return settingsCache;
-  }
-
-  async function saveSettings(settings: PlainSettings): Promise<void> {
-    const database = await getSettingsDB();
-    await database.put(settingsStoreName, settings, 'config');
-    settingsCache = settings;
-  }
-
-  function validateVoice(voice: string): boolean {
-    return VOICES.includes(voice as typeof VOICES[number]) || /^local:[^\x00-\x1f]{1,150}$/.test(voice);
-  }
-
-  function validateModel(model: string): boolean {
-    return /^gemini-[a-z0-9.-]{1,90}$/.test(model);
-  }
-
-  function validateRate(rate: number): boolean {
-    return Number.isInteger(rate) && rate >= -50 && rate <= 50;
-  }
-
-  async function hasSecret(key: string): Promise<boolean> {
-    if (await secretsStore.has(key)) return true;
-    return legacySecretsStore ? legacySecretsStore.has(key) : false;
-  }
-
-  async function getSummary(): Promise<SettingsSummary> {
-    const settings = await loadSettings();
-    const [hasGeminiKey, hasYoutubeKey] = await Promise.all([
-      hasSecret('geminiKey'),
-      hasSecret('youtubeKey'),
-    ]);
-    return {
-      model: settings.model,
-      voice: settings.voice,
-      rate: settings.rate,
-      hasGeminiKey,
-      hasYoutubeKey,
-    };
-  }
-
-  async function getSecret(provider: 'gemini' | 'youtube'): Promise<string> {
-    const key = provider === 'gemini' ? 'geminiKey' : 'youtubeKey';
-    const secret = await secretsStore.get(key);
-    if (secret !== null || !legacySecretsStore) return secret ?? '';
-    return (await legacySecretsStore.get(key)) ?? '';
-  }
-
-  async function save(patch: SettingsPatch): Promise<SettingsSummary> {
-    const allowedKeys = ['model', 'voice', 'rate', 'geminiKey', 'youtubeKey'];
-    if (!patch || typeof patch !== 'object' || Array.isArray(patch) ||
-      Object.keys(patch).some(key => !allowedKeys.includes(key))) {
-      throw new Error('Invalid patch');
-    }
-
-    const settings = await loadSettings();
-    const nextSettings: PlainSettings = { ...settings };
-    for (const field of ['model', 'voice', 'rate'] as const) {
-      if (patch[field] === undefined) continue;
-      if (field === 'model' && !validateModel(patch.model!)) throw new Error('Invalid model');
-      if (field === 'voice' && !validateVoice(patch.voice!)) throw new Error('Invalid voice');
-      if (field === 'rate' && !validateRate(patch.rate!)) throw new Error('Invalid rate');
-      nextSettings[field] = patch[field]!;
-    }
-
-    const hasSecretPatch = SECRET_FIELDS.some(([field]) => {
-      const value = patch[field];
-      return value !== undefined && value !== '';
-    });
-    for (const [field] of SECRET_FIELDS) {
-      const value = patch[field];
-      if (value !== undefined && (typeof value !== 'string' || (value !== '' && (value.length < 8 || /\s|PEGA_AQUI/i.test(value))))) {
-        throw new Error('Invalid key format (min 8 chars, no spaces)');
-      }
-    }
-
-    if (hasSecretPatch) {
-      if (secretsStore.isLocked()) {
-        throw new Error('Store is locked. Call unlock(password) before saving secrets.');
-      }
-      if (!(await secretsStore.isEncryptionAvailable())) {
-        throw new Error('Encryption not available');
-      }
-    }
-
-    await saveSettings(nextSettings);
-
-    for (const [field, provider] of SECRET_FIELDS) {
-      const value = patch[field];
-      if (value === undefined || value === '') continue;
-      await secretsStore.set(`${provider}Key`, value);
-    }
-
-    return getSummary();
-  }
-
-  async function clearSecret(provider: 'gemini' | 'youtube'): Promise<SettingsSummary> {
-    if (provider !== 'gemini' && provider !== 'youtube') {
-      throw new Error('Invalid provider');
-    }
-    await secretsStore.remove(`${provider}Key`);
-    if (legacySecretsStore) {
-      await legacySecretsStore.remove(`${provider}Key`);
-    }
-    return getSummary();
-  }
-
-  async function setMasterPassword(password: string): Promise<void> {
-    await unlock(password);
-  }
-
-  async function unlock(password: string): Promise<void> {
-    await secretsStore.unlock(password);
-    try {
-      if (legacySecretsStore) {
-        await legacySecretsStore.unlock(password);
-      }
-    } catch (error) {
-      secretsStore.lock();
-      throw error;
-    }
-  }
-
-  function lock(): void {
-    secretsStore.lock();
-    legacySecretsStore?.lock();
-  }
-
-  function isLocked(): boolean {
-    return secretsStore.isLocked() || legacySecretsStore?.isLocked() === true;
-  }
-
-  return {
-    getSummary,
-    getSecret,
-    save,
-    clearSecret,
-    setMasterPassword,
-    unlock,
-    lock,
-    isLocked,
-    isEncryptionAvailable: () => secretsStore.isEncryptionAvailable(),
-    migrateFromElectron: (electronData: unknown) => secretsStore.migrateFromElectron(electronData),
-  };
 }

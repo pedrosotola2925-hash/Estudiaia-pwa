@@ -3,23 +3,13 @@ import { createVoiceServiceWeb } from '@services/voice-web';
 import { createProviderServiceWeb } from '@services/providers-web';
 
 export interface SettingsSummary {
-  model: string;
   voice: string;
   rate: number;
-  hasGeminiKey: boolean;
-  hasYoutubeKey: boolean;
 }
 
 export interface SettingsService {
   getSettings(): Promise<SettingsSummary>;
-  saveSettings(patch: Record<string, unknown>): Promise<SettingsSummary>;
-  clearKey(provider: 'gemini' | 'youtube'): Promise<SettingsSummary>;
-  getSecret(provider: 'gemini' | 'youtube'): Promise<string>;
-  setMasterPassword(password: string): Promise<void>;
-  unlock(password: string): Promise<void>;
-  lock(): void;
-  isLocked(): boolean;
-  isEncryptionAvailable(): Promise<boolean>;
+  saveSettings(patch: { voice?: string; rate?: number }): Promise<SettingsSummary>;
 }
 
 export interface AppContext {
